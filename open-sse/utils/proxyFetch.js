@@ -1,5 +1,6 @@
 import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { registerShutdownHandler } from "../../src/lib/shutdown.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -297,6 +298,34 @@ export function getProxyMetrics() {
   };
 }
 
+/**
+ * Graceful shutdown helper (E1).
+ * Closes every remaining ProxyAgent and clears both caches.
+ * This completes the P2-01 work on the shutdown path.
+ */
+export async function closeAllProxyResources() {
+  const closePromises = [];
+
+  for (const [key, agent] of proxyDispatchers) {
+    if (agent && typeof agent.close === "function") {
+      closePromises.push(
+        Promise.resolve(agent.close()).catch((e) =>
+          console.warn(`[ProxyFetch] Error closing dispatcher ${key} on shutdown: ${e?.message || e}`)
+        )
+      );
+    }
+  }
+
+  await Promise.allSettled(closePromises);
+
+  proxyDispatchers.clear();
+  DNS_CACHE.clear();
+
+  if (process.env.NINE_ROUTER_DEBUG_PROXY) {
+    console.log("[ProxyFetch] Closed all proxy dispatchers and cleared DNS cache on shutdown");
+  }
+}
+
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
 
@@ -356,6 +385,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   return originalFetch(url, options);
 }
+
+// Register proxy resource cleanup with the central graceful shutdown coordinator (E1)
+registerShutdownHandler(closeAllProxyResources, "proxy-resources");
 
 /**
  * Patched global fetch with env-proxy support and MITM DNS bypass
