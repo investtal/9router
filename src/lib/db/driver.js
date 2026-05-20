@@ -1,5 +1,9 @@
 import { ensureDirs, DATA_FILE } from "./paths.js";
 
+// Ensure the central shutdown registry is loaded early in the server process.
+// This guarantees registrations from DB repos/adapters happen against a live registry.
+import "../shutdown.js";
+
 // Use global to survive Next.js dev hot-reload (module state resets on reload)
 if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, logged: false };
 const state = global._dbAdapter;
