@@ -1178,3 +1178,78 @@ Current E1 is now quite mature:
 
 Ready for more polish, other Phase 3 work, or testing.
 
+
+---
+
+## E1 — Major Polish Round (4 items requested by user)
+
+User explicitly requested these 4 polish items for E1:
+
+1. **MITM child graceful termination** — Update `killProxyByPidFile()` (and related MITM kill paths) to prefer `SIGTERM` + short wait before `SIGKILL`, symmetric to the main server change.
+2. **Better shutdown logging / structured output** — Add total shutdown duration, list of handlers that ran, and per-handler timing visibility.
+3. **Early import guarantee** for the shutdown registry — Ensure `src/lib/shutdown.js` is imported very early in the app lifecycle so registrations at module load time are never missed.
+4. **Expose a simple shutdown status** — For health checks or the debug endpoint (e.g. whether shutdown has started, reason, duration, etc.).
+
+This is a deliberate "finish the shutdown story" sprint before moving to other Phase 3 work.
+
+Approach: One item at a time, GitNexus + small defensive increments, full logging.
+
+
+### E1 Polish Item 3 (Early Import Guarantee) — completed
+
+**Changes**:
+- Added early `require("../src/lib/shutdown.js")` at the very top of `cli/cli.js` (right after built-in modules).
+- Added early `import "../shutdown.js"` in `src/lib/db/driver.js` (one of the first heavy modules on the server side).
+
+**Why this matters**:
+- The registry attaches its signal listeners as a side-effect on first import.
+- By forcing the import extremely early in both the CLI entry point and the DB initialization path, we guarantee that any module that calls `registerShutdownHandler()` at load time (DB repos, proxyFetch, streamHandler, etc.) will register against an already-active registry.
+- This eliminates a class of "missed registration" bugs.
+
+This is the most important foundational polish item.
+
+
+### E1 Polish Item 2 (Better Shutdown Logging) — completed
+
+**Enhancements to `src/lib/shutdown.js`**:
+
+- Structured shutdown summary is now always printed:
+  - Total duration in ms
+  - Reason
+  - Compact list of every handler with its duration, status (`ok` / `rejected` / `threw`)
+- Per-handler timing is now more consistent (logs anything > 300ms).
+
+Example output:
+```
+[Shutdown] Completed in 1240ms | reason=SIGINT
+[Shutdown] Handlers: better-sqlite-adapter(180ms,ok) request-details-repo(920ms,ok) proxy-resources(95ms,ok) stall-timers(12ms,ok)
+```
+
+This gives excellent visibility into shutdown behavior on Ubuntu without requiring debug flags.
+
+
+### E1 Polish Item 1 (MITM Child Graceful Termination) — completed
+
+**Improvement to `killProxyByPidFile()`** in `cli/cli.js`:
+
+- Made the grace wait consistent with the main server termination (2200ms).
+- Clarified comments to emphasize the "SIGTERM first" philosophy (symmetric to the E1 server change).
+- The MITM now gets the same "graceful first, hard kill only on timeout" treatment as the main Next.js process.
+
+This ensures the privileged MITM child has a fair chance to clean `/etc/hosts` before being killed, reducing stale DNS pollution on Ubuntu after restarts.
+
+
+### E1 Polish Item 4 (Simple Shutdown Status) — completed
+
+**Changes**:
+
+- Added `getShutdownStatus()` export in `src/lib/shutdown.js` returning:
+  ```js
+  { shuttingDown, reason, timestamp }
+  ```
+- Wired it into the existing `/api/debug/proxy-metrics` endpoint (now also returns a `shutdown` object).
+
+This gives an easy way to check shutdown state from the live HTML report, health checks, or any debug tooling without adding new routes.
+
+All 4 requested polish items for E1 are now complete.
+
