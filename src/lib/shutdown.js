@@ -18,8 +18,9 @@ let shuttingDown = false;
 let shutdownReason = null;
 
 // Defense-in-depth: if any registered handler hangs, we refuse to stay alive forever.
-// 10 seconds is generous for DB WAL + proxy closes + buffer flushes.
-const SHUTDOWN_TIMEOUT_MS = 10_000;
+// Default is 10s. Can be overridden with NINE_ROUTER_SHUTDOWN_TIMEOUT_MS for slower environments.
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.NINE_ROUTER_SHUTDOWN_TIMEOUT_MS) || DEFAULT_SHUTDOWN_TIMEOUT_MS;
 
 function log(msg) {
   try { console.log(`[Shutdown] ${msg}`); } catch {}
@@ -65,12 +66,17 @@ export async function runShutdownHandlers(reason = 'unknown') {
   }, SHUTDOWN_TIMEOUT_MS);
 
   for (const { fn, name } of handlers) {
+    const handlerStart = Date.now();
     try {
       await Promise.resolve(fn(reason)).catch((err) => {
         console.error(`[Shutdown] Handler "${name}" rejected:`, err?.message || err);
       });
     } catch (err) {
       console.error(`[Shutdown] Handler "${name}" threw synchronously:`, err?.message || err);
+    }
+    const handlerDuration = Date.now() - handlerStart;
+    if (handlerDuration > 500) {
+      log(`Handler "${name}" took ${handlerDuration}ms`);
     }
   }
 
