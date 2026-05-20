@@ -19,6 +19,22 @@ const HTTPS_PORT = 443;
 const HTTP_SUCCESS_MIN = 200;
 const HTTP_SUCCESS_MAX = 300;
 
+// Lightweight periodic sweeper for DNS_CACHE (P2-01)
+const DNS_CACHE_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [key, value] of DNS_CACHE) {
+    if (value.expiry && now >= value.expiry) {
+      DNS_CACHE.delete(key);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0 && process.env.NINE_ROUTER_DEBUG_PROXY) {
+    console.log(`[ProxyFetch] DNS_CACHE sweeper removed ${cleaned} expired entries`);
+  }
+}, DNS_CACHE_SWEEP_INTERVAL_MS).unref?.(); // unref so it doesn't keep the process alive
+
 function normalizeString(value) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
@@ -39,6 +55,9 @@ async function resolveRealIP(hostname) {
     const resolve4 = promisify(resolver.resolve4.bind(resolver));
     const addresses = await resolve4(hostname);
     DNS_CACHE.set(hostname, { ip: addresses[0], expiry: Date.now() + MEMORY_CONFIG.dnsCacheTtlMs });
+    if (process.env.NINE_ROUTER_DEBUG_PROXY) {
+      console.log(`[ProxyFetch][debug] DNS_CACHE set for ${hostname}, size=${DNS_CACHE.size}`);
+    }
     return addresses[0];
   } catch (error) {
     console.warn(`[ProxyFetch] DNS resolve failed for ${hostname}:`, error.message);
@@ -128,21 +147,54 @@ async function getDispatcher(proxyUrl) {
   if (!normalized) return null;
 
   if (!proxyDispatchers.has(normalized)) {
-    // Evict oldest entry if max size reached
+    // Evict oldest entry if max size reached — properly close the undici agent first
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      if (oldestKey) {
+        const oldAgent = proxyDispatchers.get(oldestKey);
+        try {
+          if (oldAgent && typeof oldAgent.close === "function") {
+            // undici ProxyAgent.close() returns a promise; we fire-and-forget
+            // to avoid blocking new dispatcher creation under load.
+            Promise.resolve(oldAgent.close()).catch((e) => {
+              console.warn(`[ProxyFetch] Failed to close evicted ProxyAgent: ${e?.message || e}`);
+            });
+          }
+        } catch (e) {
+          console.warn(`[ProxyFetch] Error during ProxyAgent eviction: ${e?.message || e}`);
+        }
+        proxyDispatchers.delete(oldestKey);
+      }
     }
+
     const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+
+    // Improved ProxyAgent options for stability under long-running load (P2-01)
+    proxyDispatchers.set(normalized, new ProxyAgent({
+      uri: normalized,
+      maxSockets: 8,              // Limit concurrent sockets per proxy
+      keepAliveTimeout: 30_000,   // 30s idle keep-alive
+      connectTimeout: 10_000,
+      bodyTimeout: 180_000,       // Allow long tool + reasoning responses
+      headersTimeout: 30_000,
+      pipelining: 1,              // Conservative
+    }));
   }
 
-  return proxyDispatchers.get(normalized);
+  const result = proxyDispatchers.get(normalized);
+
+  if (process.env.NINE_ROUTER_DEBUG_PROXY) {
+    console.log(`[ProxyFetch][debug] proxyDispatchers.size=${proxyDispatchers.size} DNS_CACHE.size=${DNS_CACHE.size}`);
+  }
+
+  return result;
 }
 
 /**
  * Create HTTPS request with manual socket connection (bypass DNS)
+ * P2-01 hardening: now respects AbortSignal and guarantees resource cleanup.
  */
-async function createBypassRequest(parsedUrl, realIP, options) {
+async function createBypassRequest(parsedUrl, realIP, options = {}) {
   const httpsModule = await import("https");
   const netModule = await import("net");
   // CJS modules expose exports via .default in ESM dynamic import context
@@ -151,8 +203,33 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let req = null;
+    let aborted = false;
+
+    const destroyResources = () => {
+      try { socket.destroy(); } catch {}
+      try { if (req) req.destroy(); } catch {}
+    };
+
+    const signal = options.signal;
+    const onAbort = () => {
+      if (aborted) return;
+      aborted = true;
+      destroyResources();
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     socket.connect(HTTPS_PORT, realIP, () => {
+      if (aborted) return;
+
       const reqOptions = {
         socket,
         // SNI + cert hostname are validated against the hostname the caller
@@ -170,7 +247,8 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         },
       };
 
-      const req = https.request(reqOptions, (res) => {
+      req = https.request(reqOptions, (res) => {
+        if (aborted) return;
         const response = {
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
@@ -187,15 +265,36 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         resolve(response);
       });
 
-      req.on("error", reject);
+      req.on("error", (err) => {
+        if (aborted) return;
+        destroyResources();
+        reject(err);
+      });
+
       if (options.body) {
         req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
       }
       req.end();
     });
 
-    socket.on("error", reject);
+    socket.on("error", (err) => {
+      if (aborted) return;
+      destroyResources();
+      reject(err);
+    });
   });
+}
+
+/**
+ * Returns current proxy-related metrics (useful for load tests and debugging).
+ * Only meaningful when debug mode or external monitoring is enabled.
+ */
+export function getProxyMetrics() {
+  return {
+    proxyDispatchers: proxyDispatchers.size,
+    dnsCache: DNS_CACHE.size,
+    timestamp: Date.now(),
+  };
 }
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {

@@ -855,3 +855,34 @@ Make the CLI's `cleanup()` prefer graceful termination (SIGTERM + short wait) be
 
 Will run GitNexus (where possible) and propose the minimal diff next.
 
+
+---
+
+### E1 First Increment (2026-05-20)
+
+**Symbol edited**: `cleanup()` in `cli/cli.js`
+
+**Pre-edit GitNexus**: detect_changes (112 symbols, critical from prior work)
+
+**Change**:
+- Replaced immediate hard `SIGKILL` of the spawned Next.js server with:
+  1. `SIGTERM` first (gives the child process a chance to run its signal handlers)
+  2. ~2.2s grace period with polling to wait for natural exit
+  3. Fallback `SIGKILL` only if the process is still alive after the grace window
+
+**Why this helps E1**:
+- The main server process now has time to execute `beforeExit` / `SIGTERM` handlers in `betterSqliteAdapter.js` → `gracefulClose()` → `wal_checkpoint(TRUNCATE)` + `db.close()`.
+- Significantly reduces the chance of leaving WAL files in a bad state on shutdown/restart.
+- Also gives open-sse resources (proxy dispatchers, stall timers, etc.) a better chance to clean up.
+
+**Post-edit GitNexus**: 95 symbols touched, 6 files, risk "critical" (expected — touches core CLI lifecycle).
+
+**Risk mitigation**: Conservative timeout + try/catch everywhere + fallback to hard kill. No behavioral change for normal operation.
+
+**Status**: ✅ Applied. This is the first concrete step toward reliable graceful shutdown + DB integrity on Linux.
+
+Next possible increments for E1:
+- Centralize shutdown logic (reduce handler duplication)
+- Improve DB adapter shutdown robustness (e.g. synchronous checkpoint guarantee)
+- Ensure open-sse globals (proxyDispatchers, active timers) are cleaned on process exit
+

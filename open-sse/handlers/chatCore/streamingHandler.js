@@ -15,7 +15,7 @@ const SSE_HEADERS = {
 /**
  * Determine which SSE transform stream to use based on provider/format.
  */
-function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey }) {
+function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, streamController }) {
   const isDroidCLI = userAgent?.toLowerCase().includes("droid") || userAgent?.toLowerCase().includes("codex-cli");
   const needsCodexTranslation = provider === "codex" && targetFormat === FORMATS.OPENAI_RESPONSES && !isDroidCLI;
 
@@ -26,14 +26,14 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
     else if (sourceFormat === FORMATS.CLAUDE) codexTarget = FORMATS.CLAUDE;
     else if (sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI) codexTarget = FORMATS.ANTIGRAVITY;
     else codexTarget = FORMATS.OPENAI;
-    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey);
+    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, streamController);
   }
 
   if (needsTranslation(targetFormat, sourceFormat)) {
-    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey);
+    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, streamController);
   }
 
-  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey);
+  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, streamController);
 }
 
 /**
@@ -42,27 +42,40 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 export function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete }) {
   if (onRequestSuccess) onRequestSuccess();
 
-  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey });
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController);
+  try {
+    const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, streamController });
+    const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController);
 
-  const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-  saveRequestDetail(buildRequestDetail({
-    provider, model, connectionId,
-    latency: { ttft: 0, total: Date.now() - requestStartTime },
-    tokens: { prompt_tokens: 0, completion_tokens: 0 },
-    request: extractRequestConfig(body, stream),
-    providerRequest: finalBody || translatedBody || null,
-    providerResponse: "[Streaming - raw response not captured]",
-    response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
-    status: "success"
-  }, { id: streamDetailId })).catch(err => {
-    console.error("[RequestDetail] Failed to save streaming request:", err.message);
-  });
+    const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: extractRequestConfig(body, stream),
+      providerRequest: finalBody || translatedBody || null,
+      providerResponse: "[Streaming - raw response not captured]",
+      response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
+      status: "success"
+    }, { id: streamDetailId })).catch(err => {
+      console.error("[RequestDetail] Failed to save streaming request:", err.message);
+    });
 
-  return {
-    success: true,
-    response: new Response(transformedBody, { headers: SSE_HEADERS })
-  };
+    return {
+      success: true,
+      response: new Response(transformedBody, { headers: SSE_HEADERS })
+    };
+  } catch (err) {
+    // Top-level safety net for P2-02
+    streamController?.clearStall?.();
+    streamController?.handleError?.(err);
+
+    console.error("[handleStreamingResponse] Early error during stream setup:", err);
+    throw err;
+  } finally {
+    // Additional defensive layer: guarantee stall timer cleanup on every exit path
+    // (success return, early error, or unexpected exception)
+    streamController?.clearStall?.();
+  }
 }
 
 /**

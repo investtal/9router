@@ -1,6 +1,9 @@
 // Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 
+// Lightweight global counter for active stall timers (P2-02 / D observability)
+let activeStallTimerCount = 0;
+
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -20,10 +23,53 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   let disconnected = false;
   let abortTimeout = null;
 
+  // Stall timer (for long-reasoning / slow upstream) — now owned by the controller
+  let stallTimer = null;
+
+  const clearStall = () => {
+    if (stallTimer) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+      activeStallTimerCount = Math.max(0, activeStallTimerCount - 1);
+    }
+  };
+
+  const armStall = () => {
+    clearStall();
+    stallTimer = setTimeout(() => {
+      stallTimer = null;
+      activeStallTimerCount = Math.max(0, activeStallTimerCount - 1);
+      // We treat a stall as a non-fatal error that should trigger abort + cleanup
+      handleError(new Error("stream stall timeout"));
+      abortController.abort();
+    }, STREAM_STALL_TIMEOUT_MS);
+    activeStallTimerCount++;
+  };
+
   const logStream = (status) => {
     const duration = Date.now() - startTime;
     const p = provider?.toUpperCase() || "UNKNOWN";
     console.log(`[${getTimeString()}] 🌊 [STREAM] ${p} | ${model || "unknown"} | ${duration}ms | ${status}`);
+  };
+
+  const handleError = (error) => {
+    if (disconnected) return;
+    disconnected = true;
+
+    clearStall();
+
+    if (abortTimeout) {
+      clearTimeout(abortTimeout);
+      abortTimeout = null;
+    }
+
+    if (error.name === "AbortError") {
+      logStream("aborted");
+      return;
+    }
+
+    logStream(`error: ${error.message}`);
+    onError?.(error);
   };
 
   return {
@@ -32,10 +78,16 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
     isConnected: () => !disconnected,
 
+    // Public API for stall management (used by pipeWithDisconnect)
+    armStall,
+    clearStall,
+
     // Call when client disconnects
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+
+      clearStall();
 
       logStream(`disconnect: ${reason}`);
 
@@ -52,6 +104,8 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       if (disconnected) return;
       disconnected = true;
 
+      clearStall();
+
       logStream("complete");
 
       if (abortTimeout) {
@@ -60,26 +114,13 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       }
     },
 
-    // Call on error
-    handleError: (error) => {
-      if (disconnected) return;
-      disconnected = true;
+    // Call on error (centralized)
+    handleError,
 
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
-
-      if (error.name === "AbortError") {
-        logStream("aborted");
-        return;
-      }
-
-      logStream(`error: ${error.message}`);
-      onError?.(error);
-    },
-
-    abort: () => abortController.abort()
+    abort: () => {
+      clearStall();
+      abortController.abort();
+    }
   };
 }
 
@@ -99,6 +140,7 @@ export function createDisconnectAwareStream(transformStream, streamController) {
   return new ReadableStream({
     async pull(controller) {
       if (!streamController.isConnected()) {
+        streamController.clearStall?.();
         controller.close();
         return;
       }
@@ -113,6 +155,7 @@ export function createDisconnectAwareStream(transformStream, streamController) {
         }
         controller.enqueue(value);
       } catch (error) {
+        streamController.clearStall?.(); // extra safety on downstream errors
         streamController.handleError(error);
         reader.cancel().catch(() => {});
         writer.abort().catch(() => {});
@@ -121,9 +164,10 @@ export function createDisconnectAwareStream(transformStream, streamController) {
     },
 
     cancel(reason) {
+      streamController.clearStall?.();
       streamController.handleDisconnect(reason || "cancelled");
-      reader.cancel();
-      writer.abort();
+      reader.cancel().catch(() => {});
+      writer.abort().catch(() => {});
     }
   });
 }
@@ -145,49 +189,61 @@ export function createDisconnectAwareStream(transformStream, streamController) {
  * @param {object} streamController - Stream controller from createStreamController
  */
 export function pipeWithDisconnect(providerResponse, transformStream, streamController) {
-  let stallTimer = null;
-  const clearStall = () => {
-    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
-  };
-  const armStall = () => {
-    clearStall();
-    stallTimer = setTimeout(() => {
-      stallTimer = null;
-      streamController.handleError?.(new Error("stream stall timeout"));
-      streamController.abort?.();
-    }, STREAM_STALL_TIMEOUT_MS);
-  };
-
-  // Wrap controller so every termination path clears the stall timer.
-  // Without this, abort/cancel/downstream-error paths leave the timer armed
-  // and a stale abort could fire after the request has already ended.
+  // We now delegate stall management to the controller (stronger ownership)
   const wrappedController = {
     signal: streamController.signal,
     startTime: streamController.startTime,
     isConnected: () => streamController.isConnected(),
-    handleComplete: () => { clearStall(); streamController.handleComplete(); },
-    handleError: (e) => { clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { clearStall(); streamController.handleDisconnect(r); },
-    abort: () => { clearStall(); streamController.abort(); }
+    handleComplete: () => streamController.handleComplete(),
+    handleError: (e) => streamController.handleError(e),
+    handleDisconnect: (r) => streamController.handleDisconnect(r),
+    abort: () => streamController.abort(),
+    // Expose the controller's stall helpers so the upstream tap can use them
+    armStall: () => streamController.armStall?.(),
+    clearStall: () => streamController.clearStall?.()
   };
 
-  armStall();
+  try {
+    // Arm the stall timer (now owned by the controller)
+    streamController.armStall?.();
 
-  const upstreamTap = new TransformStream({
-    transform(chunk, controller) {
-      armStall();
-      controller.enqueue(chunk);
-    },
-    flush() { clearStall(); }
-  });
+    const upstreamTap = new TransformStream({
+      transform(chunk, controller) {
+        streamController.armStall?.();
+        controller.enqueue(chunk);
+      },
+      flush() {
+        streamController.clearStall?.();
+      }
+    });
 
-  const transformedBody = providerResponse.body
-    .pipeThrough(upstreamTap)
-    .pipeThrough(transformStream);
+    const transformedBody = providerResponse.body
+      .pipeThrough(upstreamTap)
+      .pipeThrough(transformStream);
 
-  return createDisconnectAwareStream(
-    { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
-    wrappedController
-  );
+    return createDisconnectAwareStream(
+      { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
+      wrappedController
+    );
+  } catch (err) {
+    // Any synchronous error during setup → make sure the controller cleans its timers
+    streamController.clearStall?.();
+    // Also cancel the original provider body so we don't leave the upstream connection hanging
+    providerResponse?.body?.cancel?.().catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Observability helpers (added in light D)
+ */
+export function getActiveStallTimerCount() {
+  return activeStallTimerCount;
+}
+
+export function getStreamMetrics() {
+  return {
+    activeStallTimers: activeStallTimerCount,
+  };
 }
 

@@ -43,7 +43,8 @@ export function createSSEStream(options = {}) {
     connectionId = null,
     body = null,
     onStreamComplete = null,
-    apiKey = null
+    apiKey = null,
+    streamController = null
   } = options;
 
   let buffer = "";
@@ -61,17 +62,20 @@ export function createSSEStream(options = {}) {
 
   return new TransformStream({
     transform(chunk, controller) {
-      if (!ttftAt) {
-        ttftAt = Date.now();
-      }
-      const text = decoder.decode(chunk, { stream: true });
-      buffer += text;
-      reqLogger?.appendProviderChunk?.(text);
+      try {
+        if (!ttftAt) {
+          ttftAt = Date.now();
+        }
+        const text = decoder.decode(chunk, { stream: true });
+        buffer += text;
+        reqLogger?.appendProviderChunk?.(text);
 
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
-      for (const line of lines) {
+        try {
+          for (const line of lines) {
+            try {
         const trimmed = line.trim();
 
         // Passthrough mode: normalize and forward
@@ -250,6 +254,11 @@ export function createSSEStream(options = {}) {
             controller.enqueue(sharedEncoder.encode(output));
           }
         }
+      } catch (error) {
+        streamController?.clearStall?.();
+        streamController?.handleError?.(error);
+        controller.error(error);
+        throw error;
       }
     },
 
@@ -355,14 +364,19 @@ export function createSSEStream(options = {}) {
             thinking: accumulatedThinking
           }, state?.usage, ttftAt);
         }
+
+        // P2-02: Ensure stall timer is cleared when the transform stream finishes
+        streamController?.clearStall?.();
       } catch (error) {
         console.log("Error in flush:", error);
+        streamController?.clearStall?.();
+        streamController?.handleError?.(error);
       }
     }
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, streamController = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -374,11 +388,12 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    streamController
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, streamController = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -387,6 +402,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    streamController
   });
 }
