@@ -1,8 +1,10 @@
 // Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { registerShutdownHandler } from "../../src/lib/shutdown.js";
 
-// Lightweight global counter for active stall timers (P2-02 / D observability)
+// Lightweight global counter + Set for active stall timers (P2-02 / E1 graceful shutdown)
 let activeStallTimerCount = 0;
+const activeStallTimers = new Set();
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -28,6 +30,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
   const clearStall = () => {
     if (stallTimer) {
+      activeStallTimers.delete(stallTimer);
       clearTimeout(stallTimer);
       stallTimer = null;
       activeStallTimerCount = Math.max(0, activeStallTimerCount - 1);
@@ -37,6 +40,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   const armStall = () => {
     clearStall();
     stallTimer = setTimeout(() => {
+      activeStallTimers.delete(stallTimer);
       stallTimer = null;
       activeStallTimerCount = Math.max(0, activeStallTimerCount - 1);
       // We treat a stall as a non-fatal error that should trigger abort + cleanup
@@ -44,6 +48,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       abortController.abort();
     }, STREAM_STALL_TIMEOUT_MS);
     activeStallTimerCount++;
+    activeStallTimers.add(stallTimer);
   };
 
   const logStream = (status) => {
@@ -246,4 +251,20 @@ export function getStreamMetrics() {
     activeStallTimers: activeStallTimerCount,
   };
 }
+
+/**
+ * Graceful shutdown helper (E1).
+ * Forcibly clears any remaining stall timers so they don't keep the process
+ * or hold references after the main shutdown path has run.
+ */
+export function closeAllStallTimers() {
+  for (const timer of activeStallTimers) {
+    try { clearTimeout(timer); } catch {}
+  }
+  activeStallTimers.clear();
+  activeStallTimerCount = 0;
+}
+
+// Register stall timer cleanup with the central graceful shutdown coordinator (E1)
+registerShutdownHandler(closeAllStallTimers, "stall-timers");
 
