@@ -1,5 +1,6 @@
 import { getProxyMetrics } from "../../../../../open-sse/utils/proxyFetch.js";
 import { getStreamMetrics } from "../../../../../open-sse/utils/streamHandler.js";
+import { getShutdownStatus } from "../../../../../src/lib/shutdown.js";
 
 /**
  * Debug endpoint exposing current proxy / dispatcher / DNS cache metrics.
@@ -18,7 +19,8 @@ export async function GET() {
   try {
     const proxy = getProxyMetrics();
     const stream = getStreamMetrics();
-    return Response.json({ ...proxy, ...stream });
+    const shutdown = getShutdownStatus();
+    return Response.json({ ...proxy, ...stream, shutdown });
   } catch (err) {
     return Response.json({ error: "Failed to collect metrics", message: err?.message }, { status: 500 });
   }
