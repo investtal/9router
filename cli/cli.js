@@ -55,6 +55,13 @@ try { ensureSqliteRuntime({ silent: true }); } catch {}
 // Self-heal tray runtime (systray for macOS/Linux only). Windows skipped.
 try { ensureTrayRuntime({ silent: true }); } catch {}
 
+// P1-05: Startup orphan reaper — best-effort cleanup of processes left behind
+// after crashes, hard kills, or abrupt exits (very common source of "over time"
+// instability on Linux). Runs early, conservatively, and logs its actions.
+try {
+  reapOrphanProcesses({ silent: true });
+} catch {}
+
 // Configuration constants
 const APP_NAME = pkg.name; // Use from package.json
 const INSTALL_CMD_LATEST = `npm i -g ${APP_NAME}@latest --prefer-online`;
@@ -385,6 +392,118 @@ function killProcessOnPort(port) {
   });
 }
 
+/**
+ * P1-05: Best-effort startup orphan reaper.
+ * Cleans up processes and stale PID files left behind after crashes,
+ * SIGKILLs, or terminal closures. Designed to be conservative and noisy
+ * (via logs) rather than aggressive, so it never kills unrelated user processes.
+ */
+function reapOrphanProcesses({ silent = false } = {}) {
+  const log = (msg) => { if (!silent) console.log(`[orphan-reaper] ${msg}`); };
+  const warn = (msg) => { if (!silent) console.warn(`[orphan-reaper] ${msg}`); };
+
+  try {
+    const appDir = getAppDataDir();
+    const mitmPidFile = path.join(appDir, "mitm", ".mitm.pid");
+    const tunnelDir = path.join(appDir, "tunnel");
+    const cloudflaredPidFile = path.join(tunnelDir, "cloudflared.pid");
+    const tailscalePidFile = path.join(tunnelDir, "tailscale.pid");
+
+    // 1. Clean definitely-dead PID files (cheap and safe)
+    [mitmPidFile, cloudflaredPidFile, tailscalePidFile].forEach(file => {
+      try {
+        if (!fs.existsSync(file)) return;
+        const pid = parseInt(fs.readFileSync(file, "utf8").trim(), 10);
+        if (!pid) {
+          fs.unlinkSync(file);
+          return;
+        }
+        if (!isProcessAlive(pid)) {
+          log(`Removing stale PID file ${path.basename(file)} (process ${pid} no longer exists)`);
+          fs.unlinkSync(file);
+        }
+      } catch (e) { /* best effort */ }
+    });
+
+    // 2. Linux/macOS: conservative scan for obvious 9router orphans
+    //    We only act on very specific patterns that are extremely unlikely to match editors/IDEs.
+    if (process.platform !== "win32") {
+      const patterns = [
+        // The real MITM server (standalone copy)
+        "node.*9router.*mitm.*server\\.js",
+        // Main server process
+        "node.*9router.*server\\.js",
+        // CLI entry that got detached
+        "node.*9router.*cli\\.js"
+      ];
+
+      for (const pattern of patterns) {
+        try {
+          const output = execSync(`pgrep -f "${pattern}" 2>/dev/null || true`, {
+            encoding: "utf8",
+            timeout: 4000
+          }).trim();
+          if (!output) continue;
+
+          const pids = output.split("\n").map(p => p.trim()).filter(Boolean);
+          for (const pid of pids) {
+            if (pid === process.pid.toString()) continue; // ourselves
+
+            // Extra safety: only kill if it really looks like ours
+            try {
+              const cmdline = execSync(`ps -p ${pid} -o cmd= 2>/dev/null || true`, {
+                encoding: "utf8",
+                timeout: 2000
+              }).trim().toLowerCase();
+
+              if (cmdline.includes("9router") && (cmdline.includes("server.js") || cmdline.includes("cli.js") || cmdline.includes("mitm"))) {
+                log(`Found likely orphan (PID ${pid}): ${cmdline.slice(0, 120)}`);
+                // Prefer graceful TERM first
+                execSync(`kill -TERM ${pid} 2>/dev/null || true`, { timeout: 2000 });
+                // Give the process a moment (we don't block startup too long)
+                try { execSync('sleep 0.3 2>/dev/null || true', { timeout: 1000, stdio: 'ignore' }); } catch {}
+                if (isProcessAlive(pid)) {
+                  log(`Process ${pid} still alive after TERM — sending KILL`);
+                  execSync(`kill -9 ${pid} 2>/dev/null || true`, { timeout: 2000 });
+                }
+              }
+            } catch {}
+          }
+        } catch (e) { /* ignore scan errors */ }
+      }
+    }
+
+    // 3. Windows: lighter WMI scan (same conservative whitelist as killAllAppProcesses)
+    if (process.platform === "win32") {
+      try {
+        const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
+        const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: 5000 });
+        const lines = output.split("\n").slice(1).filter(l => l.trim());
+        lines.forEach(line => {
+          const cmd = line.toLowerCase();
+          const isOrphan =
+            cmd.includes("9router") &&
+            (cmd.includes("cli.js") || cmd.includes("server.js") || cmd.includes("mitm")) &&
+            !cmd.includes(process.pid.toString());
+
+          if (isOrphan) {
+            const match = line.match(/^"(\d+)"/);
+            if (match && match[1]) {
+              const pid = match[1];
+              log(`Found likely Windows orphan node process (PID ${pid})`);
+              try {
+                execSync(`taskkill /F /PID ${pid} 2>nul`, { shell: true, windowsHide: true, timeout: 3000 });
+              } catch {}
+            }
+          }
+        });
+      } catch {}
+    }
+  } catch (err) {
+    warn(`Unexpected error during orphan reaping: ${err.message}`);
+  }
+}
+
 
 // Detect if running in restricted environment (Codespaces, Docker)
 function isRestrictedEnvironment() {
@@ -588,12 +707,37 @@ function startServer(latestVersion) {
       killProxyByPidFile();
       // Kill cloudflared/tailscale via PID file (only this app's tunnel)
       killTunnelByPidFile();
-      // Kill server process directly
+      // Kill server process (the main Next.js instance).
+      // Prefer graceful termination first so the DB adapter can run
+      // gracefulClose() → wal_checkpoint(TRUNCATE) + proper close.
       if (server.pid) {
-        process.kill(server.pid, "SIGKILL");
+        try {
+          process.kill(server.pid, "SIGTERM");
+        } catch {}
+
+        // Short grace window for the child to exit cleanly (DB/WAL, open resources)
+        const graceMs = 2200;
+        const start = Date.now();
+        while (Date.now() - start < graceMs) {
+          try {
+            // Throws if the process has already exited
+            process.kill(server.pid, 0);
+            // Still alive — yield briefly
+            const { execSync } = require("child_process");
+            execSync("sleep 0.1", { stdio: "ignore" });
+          } catch {
+            break; // process exited during grace period
+          }
+        }
+
+        // Hard kill only if it didn't shut down gracefully
+        try {
+          process.kill(server.pid, "SIGKILL");
+        } catch {}
+        try {
+          process.kill(-server.pid, "SIGKILL");
+        } catch {}
       }
-      // Also try to kill process group
-      process.kill(-server.pid, "SIGKILL");
     } catch (e) { }
   }
 
