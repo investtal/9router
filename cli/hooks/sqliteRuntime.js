@@ -47,17 +47,36 @@ function hasModule(name) {
 function isBetterSqliteBinaryValid() {
   const binary = path.join(getRuntimeNodeModules(), "better-sqlite3", "build", "Release", "better_sqlite3.node");
   if (!fs.existsSync(binary)) return false;
+
+  // 1. Fast magic-byte check (catches completely wrong architecture)
   try {
     const fd = fs.openSync(binary, "r");
     const buf = Buffer.alloc(4);
     fs.readSync(fd, buf, 0, 4, 0);
     fs.closeSync(fd);
     const magic = buf.toString("hex");
-    if (process.platform === "linux") return magic.startsWith("7f454c46");
-    if (process.platform === "darwin") return magic.startsWith("cffaedfe") || magic.startsWith("cefaedfe");
-    if (process.platform === "win32") return magic.startsWith("4d5a");
-    return true;
+    const isValidMagic =
+      (process.platform === "linux" && magic.startsWith("7f454c46")) ||
+      (process.platform === "darwin" && (magic.startsWith("cffaedfe") || magic.startsWith("cefaedfe"))) ||
+      (process.platform === "win32" && magic.startsWith("4d5a"));
+    if (!isValidMagic) return false;
   } catch { return false; }
+
+  // 2. Real load test using process.dlopen — this catches the critical cases
+  //    that magic bytes miss: wrong Node ABI, glibc mismatch (very common on Ubuntu),
+  //    missing symbols, architecture mismatch inside the ELF, etc.
+  try {
+    const mod = { exports: {} };
+    process.dlopen(mod, binary);
+    return true;
+  } catch (e) {
+    // Binary exists and has correct magic, but cannot be loaded by *this* Node process.
+    // Common on Ubuntu after distro upgrades or when the runtime npm build used a different glibc.
+    if (process.env.DEBUG_SQLITE) {
+      console.warn(`[sqlite] better-sqlite3 binary at ${binary} failed dlopen: ${e.message}`);
+    }
+    return false;
+  }
 }
 
 // Extract a short, user-friendly reason from npm stderr.
