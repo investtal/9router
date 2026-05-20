@@ -697,6 +697,15 @@ function startServer(latestVersion) {
   function cleanup() {
     if (isCleaningUp) return;
     isCleaningUp = true;
+
+    // Trigger the central shutdown registry so that any registered handlers
+    // (DB WAL checkpoint, request details flush, future open-sse cleanup, etc.)
+    // run in a coordinated way when the user quits via CLI/TUI/tray.
+    try {
+      const { runShutdownHandlers } = require("../src/lib/shutdown.js");
+      runShutdownHandlers("cli-cleanup").catch(() => {});
+    } catch {}
+
     try {
       // Kill tray if running
       try {
