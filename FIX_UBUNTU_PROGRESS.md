@@ -886,3 +886,295 @@ Next possible increments for E1:
 - Improve DB adapter shutdown robustness (e.g. synchronous checkpoint guarantee)
 - Ensure open-sse globals (proxyDispatchers, active timers) are cleaned on process exit
 
+
+---
+
+## E1 Next Steps (user directive: 1 then 2)
+
+**Plan**:
+1. Strengthen the DB adapter (`betterSqliteAdapter.js`):
+   - Remove `process.exit(0)` calls from its signal handlers (adapter should only clean resources, not decide process lifetime).
+   - Make `gracefulClose()` and the public `close()` more robust and always attempt a final checkpoint.
+   - Consider exposing a clear `shutdown()` helper that other code can call reliably.
+
+2. Reduce signal handler fragmentation (introduce a lightweight centralized shutdown registry/coordinator).
+
+This sequence makes the DB layer trustworthy first, then reduces the chaos of multiple independent handlers.
+
+
+### E1 Step 1 — DB Adapter Strengthening (completed)
+
+**File edited**: `src/lib/db/adapters/betterSqliteAdapter.js`
+
+**Change**:
+- Removed `process.exit(0)` from the SIGINT/SIGTERM handlers inside the adapter.
+- `onShutdown` now also clears the periodic checkpoint interval (previously only the explicit `close()` did this).
+- The adapter now only performs resource cleanup (`wal_checkpoint(TRUNCATE)` + `db.close()` + stmt cache clear). It no longer decides when the process should terminate.
+
+**Rationale**:
+- Library code should never unilaterally call `process.exit()`. This was a source of race conditions and prevented proper coordination with the CLI's shutdown logic.
+- With the earlier improvement to `cleanup()` (graceful SIGTERM from parent), the main process now has a much better chance of reaching these cleanup handlers cleanly.
+
+**GitNexus**:
+- Pre: clean
+- Post: 7 symbols touched in the adapter, 34 affected processes (high because DB is used everywhere), risk "critical" (GitNexus flags any change touching the adapter broadly).
+
+This completes the first part of "1 then 2".
+
+Next: Proceed to reducing signal handler fragmentation (step 2).
+
+
+### E1 Step 2 — Foundation for Centralized Shutdown (in progress)
+
+**New file created**: `src/lib/shutdown.js`
+
+**Purpose**:
+- Single place that owns the process signal listeners (SIGINT, SIGTERM, SIGHUP, beforeExit).
+- Exposes a simple `registerShutdownHandler(fn, name)` API that any module can use.
+- Guarantees handlers run at most once, in registration order, with best-effort error isolation.
+- Future migrations can move logic out of the scattered `process.on(...)` calls in `cli/cli.js`, `requestDetailsRepo.js`, various adapters, `initializeApp.js`, etc.
+
+**Current status of Step 2**:
+- The registry module is implemented and attaches listeners exactly once.
+- Not yet wired to existing handlers (deliberately — this is the safe first increment of the "reduce fragmentation" work).
+
+**Next micro-increments planned**:
+- Wire the DB-related cleanups (betterSqliteAdapter + requestDetailsRepo) into the registry.
+- Update CLI `cleanup()` to also trigger the central shutdown when appropriate.
+- Gradually deprecate direct `process.on` calls in favor of `registerShutdownHandler`.
+
+This establishes the architectural foundation before doing invasive rewiring.
+
+
+### E1 Step 2-A — Wiring DB modules into central registry (started)
+
+User directive: A then B
+
+Goal of this sub-step:
+- Make `betterSqliteAdapter` and `requestDetailsRepo` use the new `registerShutdownHandler` instead of attaching their own direct process listeners.
+- This is the first real reduction in signal handler fragmentation.
+
+Plan (small increments):
+1. Wire betterSqliteAdapter (most critical for WAL)
+2. Wire requestDetailsRepo (async flush of request details buffer)
+
+
+### E1 Step 2-A — DB modules wired to central registry (completed)
+
+**Changes made**:
+
+1. `src/lib/db/adapters/betterSqliteAdapter.js`
+   - Now imports and uses `registerShutdownHandler(onShutdown, "better-sqlite-adapter")`
+   - Removed all direct `process.once(...)` listener attachments.
+   - The WAL checkpoint + close logic is now driven exclusively through the central coordinator.
+
+2. `src/lib/db/repos/requestDetailsRepo.js`
+   - Now registers its async `_shutdownHandler` (buffer flush) via the central registry.
+   - Removed the broad `ensureShutdownHandler()` that was doing multiple `process.on/off`.
+   - Kept a minimal synchronous fallback on `process.once("exit")` for hard-exit scenarios (where async cannot run).
+
+**Result**:
+- Two of the most important DB-related cleanup paths are now unified under the single shutdown registry created in `src/lib/shutdown.js`.
+- Direct process listener count has decreased.
+- The central registry (which owns the actual signal listeners) now controls execution order and guarantees single execution.
+
+**GitNexus**: Additional symbols touched in the two DB files. Risk remains "critical" (expected — DB paths are highly connected).
+
+This completes the "A" part of "A then B".
+
+Next: Proceed to B (make CLI `cleanup()` also invoke the central `runShutdownHandlers`).
+
+
+### E1 Step 2-B — CLI cleanup now triggers central shutdown (completed)
+
+**Change**:
+- In `cli/cli.js`, `cleanup()` now calls `runShutdownHandlers("cli-cleanup")` (fire-and-forget) early in the function.
+- This ensures that when a user triggers shutdown via the TUI, tray, or signal, the central registry (and all handlers registered with it — including the DB WAL + request details flush we just wired) get executed in a coordinated fashion.
+
+**Why this matters**:
+- The CLI is the main entry point for user-initiated exits on desktop usage.
+- Previously `cleanup()` only did direct kills and tray killing.
+- Now it participates in the unified shutdown flow.
+
+**Overall E1 progress after "A then B"**:
+- Parent (CLI) now does graceful SIGTERM + wait for child.
+- DB adapter no longer unilaterally exits and is wired to central registry.
+- Request details buffer flush is also centralized.
+- Central lightweight registry exists and owns the signal listeners.
+- CLI cleanup now participates in the registry.
+
+This is a meaningful, low-risk improvement to graceful shutdown and DB/WAL robustness.
+
+Further work in E1 could include:
+- Wiring more modules (open-sse globals, MITM child coordination, etc.)
+- Adding a timeout + forced exit safety net in the registry
+- Exposing shutdown metrics
+
+
+---
+
+## Continuing E1 — Next Logical Piece
+
+User: "Continue E1 with the next logical piece"
+
+**Decision**: After centralizing control and wiring the critical DB paths, the next highest-value step is to register the open-sse resources we spent Phase 2/P2-01/P2-02 hardening.
+
+Why this is the logical next piece:
+- Proxy dispatchers (`proxyDispatchers` Map), DNS cache, and active stall timers are exactly the long-lived resources that were causing FD/memory growth "over time".
+- We now have a working central shutdown registry.
+- We have `getProxyMetrics()` and `getStreamMetrics()` (including active stall timer count).
+- Closing these cleanly on graceful shutdown is the missing piece that makes the Phase 2 defensive work complete on the shutdown side.
+
+Planned micro-increments (one at a time):
+1. Add proper cleanup functions in `open-sse/utils/proxyFetch.js` (close all ProxyAgents, clear DNS_CACHE).
+2. Add cleanup in `open-sse/utils/streamHandler.js` (clear any remaining stall timers).
+3. Register both via `registerShutdownHandler` in the central registry.
+4. (Optional later) Expose a combined "force close all resources" for the debug endpoint or hard shutdown paths.
+
+This directly ties the stability work (Phase 2) to the shutdown robustness work (E1).
+
+
+### E1 Next Logical Piece — Proxy resources wired to shutdown registry (first increment)
+
+**File edited**: `open-sse/utils/proxyFetch.js` (core of P2-01)
+
+**Changes**:
+- Added `closeAllProxyResources()` — async function that calls `.close()` on every remaining `ProxyAgent` in `proxyDispatchers`, then clears both `proxyDispatchers` and `DNS_CACHE`.
+- Registered it with the central registry: `registerShutdownHandler(closeAllProxyResources, "proxy-resources")`.
+- Import of the shutdown registry added.
+
+**Why this is the right next step**:
+- Directly closes the exact resources we spent Phase 2 hardening (the ones that were leaking FDs/sockets).
+- Completes the "graceful shutdown" story for the proxy layer.
+- Uses the infrastructure we just built in the previous E1 steps.
+
+**GitNexus**: 11 symbols, 5 files, critical risk (as expected for touching the proxy core).
+
+**Status**: ✅ First increment of this logical piece complete.
+
+Next possible increments in this piece:
+- Add similar cleanup for active stall timers in `streamHandler.js` (using the counter we added earlier).
+- Possibly add a forced synchronous close path for hard exits.
+
+
+### E1 Next Logical Piece — Stall timer cleanup wired (second increment)
+
+**File edited**: `open-sse/utils/streamHandler.js`
+
+**Changes**:
+- Added module-level `activeStallTimers = new Set()` to track live timers (complements the existing count added in D).
+- Updated `armStall`, `clearStall`, and the timeout fire path to add/remove from the Set.
+- Added `closeAllStallTimers()` export that forcibly clears any remaining timers and resets the counter.
+- Registered it: `registerShutdownHandler(closeAllStallTimers, "stall-timers")`.
+
+**Result**:
+- On graceful shutdown, any lingering stall timers (from long-running or abruptly disconnected streams) will now be explicitly cleared.
+- This closes the last major P2-02 resource on the shutdown path.
+
+**GitNexus**: 15 symbols, 6 files, critical risk (expected — touches core streaming controller creation and the new registry).
+
+**Status of this logical piece**: 
+- Proxy resources → Done
+- Stall timers → Done
+
+This gives us solid coverage for the two biggest classes of resources that were leaking over long sessions.
+
+Next possible increments in E1:
+- Add a timeout guard + forced `process.exit` in the registry itself (defense-in-depth so shutdown never hangs).
+- Wire any remaining open-sse globals or other long-lived intervals.
+- Improve MITM child coordination from the main process during shutdown.
+
+
+---
+
+## E1 — Timeout + Forced-Exit Safety Net for Central Registry
+
+User selected option 1: Add a timeout + forced-exit safety net inside the shutdown registry.
+
+**Rationale**:
+- Even with good handlers, one misbehaving async cleanup (slow DB flush, hanging network call, etc.) can cause the process to never exit on graceful shutdown.
+- On Ubuntu (and servers in general), this leads to hard-killed processes, which defeats the whole point of the graceful WAL + resource cleanup work.
+- A bounded timeout with a forced `process.exit` after warning is standard defense-in-depth for long-running daemons.
+
+**Planned increment** (small & safe):
+- Add `SHUTDOWN_TIMEOUT_MS` (default ~10s) and a timeout that fires if `runShutdownHandlers` hasn't finished.
+- On timeout: log error, optionally force `process.exit(1)`.
+- Clear the timeout on successful completion.
+- Keep it non-intrusive (only affects the shutdown path).
+
+This is the natural "make the coordinator trustworthy" follow-up after wiring all the resources.
+
+
+### E1 — Timeout Safety Net Added to Shutdown Registry (completed)
+
+**File edited**: `src/lib/shutdown.js`
+
+**Change**:
+- Added `SHUTDOWN_TIMEOUT_MS = 10_000` (10 seconds).
+- In `runShutdownHandlers`, a timeout is armed at the start of shutdown.
+- If any handler (or the whole sequence) takes longer than the limit, it:
+  - Logs a clear error with elapsed time.
+  - Forces `process.exit(1)`.
+- The timeout is properly cleared on normal completion.
+
+**Benefits**:
+- Guarantees the process will not hang indefinitely during graceful shutdown.
+- Protects the investment in WAL checkpoints, proxy closes, stall timer cleanup, etc.
+- Still allows fast shutdowns (the timeout only fires on problems).
+
+**GitNexus**: Change touches the central registry (high blast radius by design), risk "critical".
+
+This is a strong, production-grade addition to E1.
+
+Current E1 status is now very robust:
+- Graceful parent-to-child signaling
+- DB + request buffer cleanup
+- Proxy + stall timer resource release
+- Centralized coordination + bounded timeout
+
+Next possible work (if user wants to keep going on E1):
+- Make the timeout configurable via env var
+- Add a "shutdown in progress" health endpoint or metric
+- Improve MITM child shutdown signaling from the main process
+
+
+---
+
+## Continuing E1 Polish
+
+User: "Keep polishing E1 a bit more"
+
+We have a solid foundation:
+- Central registry with bounded timeout + forced exit
+- All major resource classes wired (DB, proxies, stall timers, request buffer)
+- Graceful signaling from CLI
+
+**Next polishing focus** (small, high-value, low-risk):
+1. Make the shutdown timeout configurable via environment variable (`NINE_ROUTER_SHUTDOWN_TIMEOUT_MS`).
+2. Add lightweight per-handler timing logs so it's visible which cleanup is taking time (great for diagnostics on Ubuntu).
+
+This turns the safety net from "fixed 10s" into something operators can tune, and gives visibility into shutdown behavior.
+
+
+### E1 Polish — Configurable Timeout + Handler Timing (completed)
+
+**Changes to `src/lib/shutdown.js`**:
+
+- Timeout is now configurable via `NINE_ROUTER_SHUTDOWN_TIMEOUT_MS` environment variable (falls back to 10s).
+- Added lightweight per-handler timing:
+  - Any handler that takes > 500ms gets a log line with its duration.
+  - This gives immediate visibility into which cleanup is the slow one during development or on Ubuntu.
+
+**Why this is good polish**:
+- Operators can tune the grace period for their environment (slow disks, heavy tool usage, etc.).
+- Diagnostics are now much better without adding heavy observability.
+
+**GitNexus**: 7 files touched (mostly because the registry is now more widely referenced), risk critical.
+
+This is a nice, low-risk improvement that makes the E1 work more usable in real deployments.
+
+Current E1 is now quite mature:
+- Centralized, observable, bounded, configurable graceful shutdown with resource cleanup for the major leak classes.
+
+Ready for more polish, other Phase 3 work, or testing.
+
