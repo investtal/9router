@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { registerShutdownHandler } from "../../shutdown.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -185,16 +186,16 @@ const _shutdownHandler = async () => {
   if (writeBuffer.length > 0) await flushToDatabase();
 };
 
-function ensureShutdownHandler() {
-  process.off("beforeExit", _shutdownHandler);
-  process.off("SIGINT", _shutdownHandler);
-  process.off("SIGTERM", _shutdownHandler);
-  process.off("exit", _shutdownHandler);
+// Register with central shutdown coordinator (reduces direct process listener fragmentation).
+// We still keep a minimal 'exit' listener for the synchronous 'exit' event (async handlers
+// cannot run reliably on process 'exit').
+registerShutdownHandler(_shutdownHandler, "request-details-repo");
 
-  process.on("beforeExit", _shutdownHandler);
-  process.on("SIGINT", _shutdownHandler);
-  process.on("SIGTERM", _shutdownHandler);
-  process.on("exit", _shutdownHandler);
-}
-
-ensureShutdownHandler();
+process.once("exit", () => {
+  // Best-effort synchronous flush on hard exit
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (writeBuffer.length > 0) {
+    // Note: this is fire-and-forget; on 'exit' we cannot reliably await
+    flushToDatabase().catch(() => {});
+  }
+});
