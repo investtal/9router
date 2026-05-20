@@ -31,6 +31,65 @@ function atomicWriteHostsWin(target, originalContent, newContent) {
   }
 }
 
+/**
+ * Atomic write for Linux/macOS /etc/hosts with rollback.
+ * Uses temp file + rename (atomic on same filesystem) + .bak backup.
+ * When sudoPassword or sudo is available, all operations go through sudo.
+ * On any failure, attempts to restore the original content.
+ */
+async function atomicWriteHostsLinux(target, originalContent, newContent, sudoPassword) {
+  const tmpNew = `${target}.9router.new`;
+  const tmpBak = `${target}.9router.bak`;
+  const useSudo = !!sudoPassword || isSudoAvailable();
+
+  const writeFile = async (filePath, content) => {
+    const escaped = content.replace(/'/g, "'\\''");
+    const cmd = `printf '%s' '${escaped}' | tee ${filePath} > /dev/null`;
+    if (useSudo) {
+      await execWithPassword(cmd, sudoPassword || "");
+    } else {
+      // Docker / no-sudo fallback — direct write (best effort)
+      fs.writeFileSync(filePath, content, "utf8");
+    }
+  };
+
+  const mv = async (from, to) => {
+    const cmd = `mv ${from} ${to}`;
+    if (useSudo) {
+      await execWithPassword(cmd, sudoPassword || "");
+    } else {
+      fs.renameSync(from, to);
+    }
+  };
+
+  const rm = async (filePath) => {
+    const cmd = `rm -f ${filePath}`;
+    if (useSudo) {
+      await execWithPassword(cmd, sudoPassword || "");
+    } else {
+      try { fs.unlinkSync(filePath); } catch {}
+    }
+  };
+
+  try {
+    await writeFile(tmpNew, newContent);
+    await rm(tmpBak);
+    await mv(target, tmpBak);
+
+    try {
+      await mv(tmpNew, target);
+    } catch (e) {
+      // Rollback
+      try { await mv(tmpBak, target); } catch { await writeFile(target, originalContent); }
+      throw e;
+    }
+
+    await rm(tmpBak);
+  } finally {
+    await rm(tmpNew);
+  }
+}
+
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
 const HOSTS_FILE = IS_WIN
@@ -167,9 +226,7 @@ async function addDNSEntry(tool, sudoPassword) {
       const trimmed = current.replace(/[\r\n\s]+$/g, "");
       const toAppend = entriesToAdd.map(h => `127.0.0.1 ${h}`).join("\n");
       const next = `${trimmed}\n${toAppend}\n`;
-      // Use tee via sudo to overwrite atomically — escape single quotes in content
-      const escaped = next.replace(/'/g, "'\\''");
-      await execWithPassword(`printf '%s' '${escaped}' | tee ${HOSTS_FILE} > /dev/null`, sudoPassword);
+      await atomicWriteHostsLinux(HOSTS_FILE, current, next, sudoPassword);
       await flushDNS(sudoPassword);
     }
     log(`🌐 DNS ${tool}: ✅ added ${entriesToAdd.join(", ")}`);
@@ -203,8 +260,7 @@ async function removeDNSEntry(tool, sudoPassword) {
       const current = fs.readFileSync(HOSTS_FILE, "utf8");
       const filtered = current.split(/\r?\n/).filter(l => !entriesToRemove.some(h => l.includes(h))).join("\n");
       const next = filtered.replace(/[\r\n\s]+$/g, "") + "\n";
-      const escaped = next.replace(/'/g, "'\\''");
-      await execWithPassword(`printf '%s' '${escaped}' | tee ${HOSTS_FILE} > /dev/null`, sudoPassword);
+      await atomicWriteHostsLinux(HOSTS_FILE, current, next, sudoPassword);
       await flushDNS(sudoPassword);
     }
     log(`🌐 DNS ${tool}: ✅ removed ${entriesToRemove.join(", ")}`);
@@ -240,7 +296,21 @@ function removeAllDNSEntriesSync() {
     const filtered = content.split(/\r?\n/).filter(l => !allHosts.some(h => l.includes(h))).join(eol);
     const next = filtered.replace(/[\r\n\s]+$/g, "") + eol;
     if (next === content) return;
-    fs.writeFileSync(HOSTS_FILE, next, "utf8");
+
+    // Best-effort atomic write even in sync path (uses same .new/.bak naming)
+    const tmpNew = `${HOSTS_FILE}.9router.new`;
+    const tmpBak = `${HOSTS_FILE}.9router.bak`;
+    try {
+      fs.writeFileSync(tmpNew, next, "utf8");
+      try { fs.unlinkSync(tmpBak); } catch {}
+      fs.renameSync(HOSTS_FILE, tmpBak);
+      fs.renameSync(tmpNew, HOSTS_FILE);
+      try { fs.unlinkSync(tmpBak); } catch {}
+    } catch (e) {
+      try { fs.writeFileSync(HOSTS_FILE, next, "utf8"); } catch {}
+      try { fs.unlinkSync(tmpNew); } catch {}
+    }
+
     if (IS_WIN) {
       try { execSync("ipconfig /flushdns", { windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
     } else if (IS_MAC) {
@@ -257,6 +327,8 @@ module.exports = {
   removeDNSEntry,
   removeAllDNSEntries,
   removeAllDNSEntriesSync,
+  atomicWriteHostsLinux,   // new in P1-03 for atomic /etc/hosts writes
+  atomicWriteHostsWin,
   execWithPassword,
   isSudoAvailable,
   canRunSudoWithoutPassword,
