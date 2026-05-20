@@ -6,6 +6,12 @@ const fs = require("fs");
 const https = require("https");
 const os = require("os");
 
+// Early import of the centralized shutdown registry (E1 polish).
+// This guarantees that process signal listeners are attached *before*
+// any other module that might call registerShutdownHandler at load time.
+// Must stay one of the absolute first requires.
+require("../src/lib/shutdown.js");
+
 // Native spinner - no external dependency
 function createSpinner(text) {
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -312,8 +318,9 @@ function waitForExit(pid, timeoutMs) {
   return false;
 }
 
-// Kill MIT server by PID file (runs privileged, needs special handling)
-// Sends SIGTERM first so MIT can clean up host entries before dying.
+// Kill MIT server by PID file (runs privileged, needs special handling).
+// Prefers graceful SIGTERM + short wait before hard kill, symmetric to
+// the main server termination logic added in E1.
 function killProxyByPidFile() {
   try {
     const pidFile = path.join(getAppDataDir(), "mitm", ".mitm.pid");
@@ -322,24 +329,26 @@ function killProxyByPidFile() {
     if (!pid) return;
 
     if (process.platform === "win32") {
-      // Graceful first (lets server cleanup hosts), then force
+      // Graceful first (lets MITM clean /etc/hosts), then force
       try { execSync(`taskkill /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 2000 }); } catch { }
-      if (!waitForExit(pid, 1500)) {
+      if (!waitForExit(pid, 2200)) {
         try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { }
       }
-      // Last-resort: PowerShell Stop-Process (sometimes succeeds where taskkill fails on admin processes)
+      // Last-resort PowerShell
       if (!waitForExit(pid, 500)) {
         try { execSync(`powershell -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${pid} -Force"`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { }
       }
     } else {
-      // SIGTERM via cached sudo token first
+      // SIGTERM first (preferred) — gives MITM a chance to remove hosts entries
       try { execSync(`sudo -n kill -TERM ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 2000 }); }
       catch { try { process.kill(pid, "SIGTERM"); } catch { } }
-      if (!waitForExit(pid, 1500)) {
+
+      if (!waitForExit(pid, 2200)) {
         try { execSync(`sudo -n kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 2000 }); }
         catch { try { process.kill(pid, "SIGKILL"); } catch { } }
       }
     }
+
     try { fs.unlinkSync(pidFile); } catch { }
   } catch { }
 }
