@@ -33,11 +33,19 @@ const handlers = {
 // ── SSL / SNI ─────────────────────────────────────────────────
 
 const certCache = new Map();
+const MAX_CERT_CACHE_SIZE = 400; // Prevent unbounded memory growth in long-running MITM child
 let rootCAPem;
 
 function sniCallback(servername, cb) {
   try {
     if (certCache.has(servername)) return cb(null, certCache.get(servername));
+
+    // Simple FIFO eviction when cache grows too large (Map preserves insertion order)
+    if (certCache.size >= MAX_CERT_CACHE_SIZE) {
+      const oldestKey = certCache.keys().next().value;
+      if (oldestKey) certCache.delete(oldestKey);
+    }
+
     const certData = getCertForDomain(servername);
     if (!certData) return cb(new Error(`Failed to generate cert for ${servername}`));
     const ctx = require("tls").createSecureContext({
@@ -58,6 +66,14 @@ try {
   const rootCert = fs.readFileSync(path.join(MITM_DIR, "rootCA.crt"));
   rootCAPem = rootCert.toString("utf8");
   sslOptions = { key: rootKey, cert: rootCert, SNICallback: sniCallback };
+
+  // Early self-PID write (P1-02) — helps parent get real PID quickly
+  try {
+    const pidFile = path.join(MITM_DIR, ".mitm.pid");
+    fs.writeFileSync(pidFile, String(process.pid));
+  } catch (e) {
+    err(`Early PID file write failed: ${e.message}`);
+  }
 } catch (e) {
   err(`Root CA not found: ${e.message}`);
   process.exit(1);
@@ -67,14 +83,23 @@ try {
 
 const cachedTargetIPs = {};
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_IP_CACHE_SIZE = 500; // Prevent unbounded growth alongside certCache
 
 async function resolveTargetIP(hostname) {
   const cached = cachedTargetIPs[hostname];
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.ip;
+
   const resolver = new dns.Resolver();
   resolver.setServers(["8.8.8.8"]);
   const resolve4 = promisify(resolver.resolve4.bind(resolver));
   const addresses = await resolve4(hostname);
+
+  // Simple size guard (delete arbitrary oldest entry)
+  if (Object.keys(cachedTargetIPs).length >= MAX_IP_CACHE_SIZE) {
+    const firstKey = Object.keys(cachedTargetIPs)[0];
+    if (firstKey) delete cachedTargetIPs[firstKey];
+  }
+
   cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
   return cachedTargetIPs[hostname].ip;
 }
@@ -257,7 +282,21 @@ try {
   process.exit(1);
 }
 
-server.listen(LOCAL_PORT, () => log(`🚀 Server ready on :${LOCAL_PORT}`));
+server.listen(LOCAL_PORT, () => {
+  log(`🚀 Server ready on :${LOCAL_PORT}`);
+
+  // === P1-02: Write our own PID (authoritative) ===
+  // This fixes the long-standing problem where the parent recorded the
+  // sudo wrapper PID instead of the real listening Node process.
+  // The child always knows its true pid, regardless of launch method
+  // (sudo, direct spawn, Docker, etc.).
+  try {
+    const pidFile = path.join(MITM_DIR, ".mitm.pid");
+    fs.writeFileSync(pidFile, String(process.pid));
+  } catch (e) {
+    err(`Failed to write authoritative PID file: ${e.message}`);
+  }
+});
 
 server.on("error", (e) => {
   if (e.code === "EADDRINUSE") err(`Port ${LOCAL_PORT} already in use`);
@@ -267,12 +306,30 @@ server.on("error", (e) => {
 });
 
 const { removeAllDNSEntriesSync } = require("./dns/dnsConfig");
+
+// ── Child process safety nets (critical for long-running MITM on Linux) ──
+process.on("uncaughtException", (err) => {
+  try { console.error(`[MITM] Uncaught exception: ${err?.stack || err?.message || err}`); } catch {}
+  try { removeAllDNSEntriesSync(); } catch {}
+  // Best-effort cache cleanup
+  try { certCache.clear(); } catch {}
+  try { Object.keys(cachedTargetIPs).forEach(k => delete cachedTargetIPs[k]); } catch {}
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  try { console.error(`[MITM] Unhandled rejection:`, reason); } catch {}
+});
+
 let isShuttingDown = false;
 const shutdown = () => {
   if (isShuttingDown) return;
   isShuttingDown = true;
   // Strip tool hosts from /etc/hosts so other apps aren't broken after exit
-  removeAllDNSEntriesSync();
+  try { removeAllDNSEntriesSync(); } catch {}
+  // Clear in-memory caches to reduce memory footprint on exit
+  try { certCache.clear(); } catch {}
+  try { Object.keys(cachedTargetIPs).forEach(k => delete cachedTargetIPs[k]); } catch {}
   const forceExit = setTimeout(() => process.exit(0), 1500);
   server.close(() => { clearTimeout(forceExit); process.exit(0); });
 };
