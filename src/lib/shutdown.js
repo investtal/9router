@@ -35,6 +35,18 @@ export function getShutdownReason() {
 }
 
 /**
+ * Returns a lightweight snapshot of current shutdown state.
+ * Useful for health checks and /debug endpoints.
+ */
+export function getShutdownStatus() {
+  return {
+    shuttingDown,
+    reason: shutdownReason,
+    timestamp: shuttingDown ? Date.now() : null,
+  };
+}
+
+/**
  * Register a cleanup function to be called during graceful shutdown.
  * @param {Function} fn - async or sync function. Receives (reason) as argument.
  * @param {string} [name] - optional name for logging/diagnostics
@@ -56,6 +68,7 @@ export async function runShutdownHandlers(reason = 'unknown') {
   log(`Starting graceful shutdown (reason: ${reason})`);
 
   const shutdownStart = Date.now();
+  const results = [];
 
   // Safety timeout — prevents the process from hanging forever if a handler is slow or broken.
   const timeoutId = setTimeout(() => {
@@ -67,20 +80,37 @@ export async function runShutdownHandlers(reason = 'unknown') {
 
   for (const { fn, name } of handlers) {
     const handlerStart = Date.now();
+    let status = 'ok';
+    let error = null;
+
     try {
       await Promise.resolve(fn(reason)).catch((err) => {
-        console.error(`[Shutdown] Handler "${name}" rejected:`, err?.message || err);
+        status = 'rejected';
+        error = err?.message || String(err);
+        console.error(`[Shutdown] Handler "${name}" rejected:`, error);
       });
     } catch (err) {
-      console.error(`[Shutdown] Handler "${name}" threw synchronously:`, err?.message || err);
+      status = 'threw';
+      error = err?.message || String(err);
+      console.error(`[Shutdown] Handler "${name}" threw synchronously:`, error);
     }
-    const handlerDuration = Date.now() - handlerStart;
-    if (handlerDuration > 500) {
-      log(`Handler "${name}" took ${handlerDuration}ms`);
+
+    const duration = Date.now() - handlerStart;
+    results.push({ name, duration, status, error });
+
+    if (duration > 300) {
+      log(`Handler "${name}" took ${duration}ms`);
     }
   }
 
   clearTimeout(timeoutId);
+
+  const totalDuration = Date.now() - shutdownStart;
+
+  // Structured shutdown summary
+  console.log(`[Shutdown] Completed in ${totalDuration}ms | reason=${reason}`);
+  console.log(`[Shutdown] Handlers: ${results.map(r => `${r.name}(${r.duration}ms,${r.status})`).join(' ')}`);
+
   log('All shutdown handlers completed');
 }
 
@@ -108,4 +138,5 @@ export default {
   runShutdownHandlers,
   isShuttingDown,
   getShutdownReason,
+  getShutdownStatus,
 };
