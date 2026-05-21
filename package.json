@@ -7,9 +7,8 @@
     "dev": "next dev --webpack --port 20128",
     "build": "PORT=20128 next build --webpack",
     "start": "PORT=20128 next start",
-
-    "// CLI development helpers": "",
     "cli": "node ./cli/cli.js",
+    "cli:background": "node ./cli/cli.js &",
     "cli:bun": "bun ./cli/cli.js",
     "cli:link": "cd cli && npm link",
     "cli:unlink": "cd cli && npm unlink -g 9router",
