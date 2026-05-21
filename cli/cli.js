@@ -588,6 +588,15 @@ function startServer(latestVersion) {
   function cleanup() {
     if (isCleaningUp) return;
     isCleaningUp = true;
+
+    // Phase 5: Best-effort flush of crash logger on CLI shutdown
+    // (HIGH-risk area — kept minimal per impact analysis)
+    try {
+      if (global.__logCrash) {
+        global.__logCrash("cli-cleanup", new Error("CLI cleanup triggered"));
+      }
+    } catch {}
+
     try {
       // Kill tray if running
       try {
