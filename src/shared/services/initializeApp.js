@@ -16,6 +16,7 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { startClaudeAutoPing } from "@/shared/services/claudeAutoPing";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
+import { registerCleanup, shutdown, isShutdownInProgress } from "@/lib/shutdownCoordinator";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -50,6 +51,18 @@ export async function initializeApp() {
     await cleanupProviderConnections();
     const settings = await getSettings();
 
+    // Phase 5: Linux-specific warning for file descriptor limits (common cause of silent death)
+    if (process.platform === "linux") {
+      try {
+        const { execSync } = await import("child_process");
+        const ulimitOutput = execSync("ulimit -n 2>/dev/null || echo 1024", { encoding: "utf8" }).trim();
+        const currentLimit = parseInt(ulimitOutput, 10) || 1024;
+        if (currentLimit < 4096) {
+          console.warn(`[InitApp] WARNING: Low file descriptor limit (${currentLimit}). Long-running proxy usage on Linux may hit EMFILE. Consider increasing with "ulimit -n 65536" or systemd LimitNOFILE.`);
+        }
+      } catch { /* non-fatal */ }
+    }
+
     // Auto-resume tunnel (once per process)
     if (settings.tunnelEnabled && !g.tunnelAutoResumed) {
       g.tunnelAutoResumed = true;
@@ -65,13 +78,27 @@ export async function initializeApp() {
     }
 
     if (!g.signalHandlersRegistered) {
-      const cleanup = () => {
+      // Phase 5: Register core privileged cleanup with the coordinator
+      registerCleanup("dns-and-cloudflared", () => {
         try { removeAllDNSEntriesSync(); } catch { /* best effort */ }
         killCloudflared();
-        process.exit();
+      }, 5); // High priority (low number)
+
+      const cleanup = async () => {
+        if (isShutdownInProgress()) return;
+        await shutdown("signal");
+        process.exit(0);
       };
+
       process.on("SIGINT", cleanup);
       process.on("SIGTERM", cleanup);
+
+      // Phase 5: SIGHUP handler — do NOT exit by default.
+      process.on("SIGHUP", () => {
+        console.log("[InitApp] Received SIGHUP — performing graceful cleanup via coordinator");
+        shutdown("SIGHUP").catch(() => {});
+      });
+
       process.on("exit", () => { try { removeAllDNSEntriesSync(); } catch { /* ignore */ } });
       g.signalHandlersRegistered = true;
     }
@@ -85,6 +112,11 @@ export async function initializeApp() {
     setTunnelUnexpectedExitCallback(() => {
       safeRestartTunnel("unexpected-exit").catch(() => {});
     });
+
+    // Phase 4 safety: prune old usageHistory on startup (does not touch usageDaily aggregates)
+    import("@/lib/db/repos/usageRepo.js").then(({ pruneOldUsageHistory }) => {
+      pruneOldUsageHistory(90).catch(() => {});
+    }).catch(() => {});
 
     startWatchdog();
     startNetworkMonitor();
