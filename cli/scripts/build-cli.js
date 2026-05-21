@@ -83,6 +83,28 @@ function copyRecursive(src, dest) {
 
 console.log("📦 Building 9Router CLI package with Next.js...\n");
 
+// === Aggressive clean for reliable standalone builds ===
+// We clean both the custom dist dir and the normal .next because
+// Next.js standalone output can be flaky when using custom distDir + workspace tracing.
+console.log("🧹 Cleaning previous build artifacts (aggressive clean for CLI build)...");
+const dirsToClean = [
+  buildDistDir,
+  buildHomeDir,
+  cliAppDir,
+  path.join(appDir, ".next"),           // Normal .next — helps avoid stale standalone issues
+];
+for (const dir of dirsToClean) {
+  if (fs.existsSync(dir)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      console.log(`   ✓ Removed ${path.relative(process.cwd(), dir)}`);
+    } catch (e) {
+      console.warn(`   ⚠️  Failed to remove ${dir}: ${e.message}`);
+    }
+  }
+}
+console.log("✅ Cleaned previous build artifacts\n");
+
 fs.mkdirSync(buildHomeDir, { recursive: true });
 fs.mkdirSync(path.join(buildHomeDir, "AppData", "Roaming"), { recursive: true });
 fs.mkdirSync(path.join(buildHomeDir, "AppData", "Local"), { recursive: true });
@@ -122,17 +144,9 @@ try {
   process.exit(1);
 }
 
-// Step 2: Clean old app/cli/app if exists
-console.log("2️⃣  Cleaning old app/cli/app...");
-if (fs.existsSync(cliAppDir)) {
-  fs.rmSync(cliAppDir, { recursive: true, force: true });
-}
-console.log("✅ Cleaned\n");
+// Step 2: Copy Next.js standalone build to cli/app
+console.log("2️⃣  Copying Next.js standalone build to app/cli/app...");
 
-// Step 3: Copy Next.js standalone build to app/cli/app.
-// Newer Next.js standalone output writes server.js/package.json plus .next/, src/, and
-// node_modules/ directly under .next/standalone. Older builds may still use a nested app/.
-console.log("3️⃣  Copying Next.js standalone build to app/cli/app...");
 const standaloneRoot = path.join(appDir, ".next", "standalone");
 const standaloneRootResolved = path.join(buildDistDir, "standalone");
 let standaloneRootToUse = fs.existsSync(standaloneRootResolved) ? standaloneRootResolved : standaloneRoot;
@@ -147,11 +161,24 @@ if (fs.existsSync(path.join(nestedRoot, "server.js")) && !fs.existsSync(path.joi
 const standaloneApp = fs.existsSync(path.join(standaloneRootToUse, "server.js"))
   ? standaloneRootToUse
   : path.join(standaloneRootToUse, "app");
+
 if (!fs.existsSync(standaloneApp)) {
-  console.error("❌ Next.js standalone build not found under .next/standalone");
-  console.error("Expected either .next/standalone/server.js or .next/standalone/app/");
+  console.error("\n❌ Next.js standalone build not found.");
+  console.error("Expected location: " + path.join(standaloneRootToUse, "server.js"));
+  console.error("Or fallback:       " + path.join(standaloneRootToUse, "app/"));
+
+  console.error("\n📁 Current contents of relevant directories:");
+  console.error("  .next-cli-build:", fs.existsSync(buildDistDir) ? fs.readdirSync(buildDistDir) : "does not exist");
+  console.error("  .next:", fs.existsSync(path.join(appDir, ".next")) ? fs.readdirSync(path.join(appDir, ".next")) : "does not exist");
+
+  console.error("\n💡 Possible fixes:");
+  console.error("   • Make sure `output: 'standalone'` is set in next.config.mjs");
+  console.error("   • Try a completely clean build: rm -rf .next .next-cli-build cli/app && bun run cli:build");
+  console.error("   • Check that the build actually finished without errors above.");
+
   process.exit(1);
 }
+
 copyRecursive(standaloneApp, cliAppDir);
 
 // Older nested-app layout stores traced node_modules at standalone root.
