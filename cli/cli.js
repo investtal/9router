@@ -55,6 +55,16 @@ try { ensureSqliteRuntime({ silent: true }); } catch {}
 // Self-heal tray runtime (systray for macOS/Linux only). Windows skipped.
 try { ensureTrayRuntime({ silent: true }); } catch {}
 
+// Initialize crash logger for the CLI manager process itself (tray mode, background, etc.)
+// This ensures consistency with the server process and gives us crash logs even if the wrapper dies.
+try {
+  const { initCrashLogger } = require("./src/lib/crashLogger.js");
+  initCrashLogger();
+} catch (e) {
+  // Non-fatal — the server child has its own handler anyway
+  console.error("[cli] Failed to init crash logger:", e.message);
+}
+
 // Configuration constants
 const APP_NAME = pkg.name; // Use from package.json
 const INSTALL_CMD_LATEST = `npm i -g ${APP_NAME}@latest --prefer-online`;
