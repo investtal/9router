@@ -270,3 +270,40 @@ After the 1-phase fix:
 **End of Analysis Document**
 
 This file was generated from six parallel subagent investigations + manual code tracing performed on 2026-05-21. All raw subagent outputs are preserved in the conversation history for auditability.
+
+---
+
+## Phase 5 Progress: Platform Hardening & Lifecycle (Updated)
+
+### Completed in Phase 5
+- Added graceful **SIGHUP handler** in the main server process (`initializeApp`). Performs DNS + cloudflared cleanup but **does not** force exit (important for Linux terminal close / ssh disconnect scenarios).
+- Added startup **Linux `ulimit -n` warning** when file descriptor limit is dangerously low.
+- Introduced **Shutdown Coordinator** (`src/lib/shutdownCoordinator.js`):
+  - Priority-based cleanup registration.
+  - Sequential execution with per-handler timeouts and isolation.
+  - First integration point wired into `initializeApp`.
+- Updated CLI `cleanup()` with best-effort crash logger flush on shutdown.
+
+### Recommended Long-Running Practices (Ubuntu/Linux)
+
+**1. Prefer the Official CLI**
+- Use `9router --tray` or a proper systemd service instead of raw `bun run start`.
+- The CLI has better signal handling, auto-restart logic, and crash reporting.
+
+**2. File Descriptor Limits (Very Important)**
+- Default limits on Ubuntu are often too low for long-running proxies.
+- Recommended: `LimitNOFILE=65536` in systemd unit, or `ulimit -n 65536`.
+
+**3. Signal Handling**
+- SIGHUP is now handled gracefully (no forced exit).
+- Prefer SIGTERM for clean shutdowns.
+
+**4. Monitoring & Observability**
+- Regularly check `~/.9router/crash.log`.
+- Monitor RSS memory and open file descriptors of the process.
+
+**5. Production Deployment Recommendation**
+- Wrap the `9router` CLI in systemd or Docker with proper resource limits.
+- The combination of crash logging + Shutdown Coordinator + SIGHUP handling significantly reduces silent death risk on long-running Ubuntu instances.
+
+These improvements, combined with earlier phases (child error handling, resource caps, DB pruning), make 9router much more robust for 24/7 operation on Linux.
