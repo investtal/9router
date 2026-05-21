@@ -127,6 +127,18 @@ npm run cli
 bun run cli:bun
 ```
 
+**One-time (or after source changes): build the embedded Next.js server**
+
+The CLI embeds a standalone Next.js production build for the dashboard + API:
+
+```bash
+# From project root
+bun run cli:build
+# or: npm run cli:build
+```
+
+This step is now reliable (uses standard `.next/standalone` output).
+
 **Make the `9router` command globally available** (like after `npm install -g 9router`):
 
 ```bash
