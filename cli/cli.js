@@ -57,8 +57,18 @@ try { ensureTrayRuntime({ silent: true }); } catch {}
 
 // Initialize crash logger for the CLI manager process itself (tray mode, background, etc.)
 // This ensures consistency with the server process and gives us crash logs even if the wrapper dies.
+// The path depends on how the CLI is invoked:
+// - After `bun run cli:build` or in published package: ./src/lib/crashLogger.js (copied during build)
+// - Running directly from monorepo root without build: ../src/lib/crashLogger.js
 try {
-  const { initCrashLogger } = require("./src/lib/crashLogger.js");
+  let crashMod;
+  try {
+    crashMod = require("./src/lib/crashLogger.js");
+  } catch {
+    // Fallback for running the raw cli/cli.js from the project root without a prior cli:build
+    crashMod = require("../src/lib/crashLogger.js");
+  }
+  const { initCrashLogger } = crashMod;
   initCrashLogger();
 } catch (e) {
   // Non-fatal — the server child has its own handler anyway

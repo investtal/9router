@@ -336,6 +336,26 @@ if (fs.existsSync(updaterSrc)) {
   console.log("⏭️  No updater files found\n");
 }
 
+// Step 7c: Copy crashLogger for the outer CLI manager process (cli/cli.js)
+// This file lives in the main src/ but the thin CLI wrapper needs it too.
+// We place it under cli/src/lib/ so that after packing, require("./src/lib/crashLogger.js")
+// works both from source (after build) and in the published npm package.
+console.log("7️⃣ c Copying crash logger for CLI wrapper...");
+const crashLoggerSrc = path.join(appDir, "src", "lib", "crashLogger.js");
+const crashLoggerDestDir = path.join(cliDir, "src", "lib");
+const crashLoggerDest = path.join(crashLoggerDestDir, "crashLogger.js");
+try {
+  if (fs.existsSync(crashLoggerSrc)) {
+    fs.mkdirSync(crashLoggerDestDir, { recursive: true });
+    fs.copyFileSync(crashLoggerSrc, crashLoggerDest);
+    console.log("✅ Copied crashLogger.js to cli/src/lib/\n");
+  } else {
+    console.log("⏭️  No crashLogger.js found in main src/\n");
+  }
+} catch (e) {
+  console.warn("⚠️  Failed to copy crashLogger:", e.message);
+}
+
 // Step 8: Build MITM server (config driven - see app/cli/scripts/buildMitm.js)
 console.log("8️⃣  Building MITM server...");
 try {
