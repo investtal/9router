@@ -1,38 +1,21 @@
 #!/usr/bin/env bash
 # installed-by: ivt-hooks
-# commit-msg hook: prepend the current branch's IVT-XXXX task id to the
-# commit message if it isn't already present.
+# Prepend the current branch's IVT-XXXX task id to the commit message.
 #
-# Behaviour:
-#   • On a valid IVT branch (e.g. "feat/IVT-0999-broker"), the task id
-#     "IVT-0999" is extracted and prepended to the message body.
-#   • If the message already contains the task id anywhere, it is left
-#     untouched (no duplicate prefixing).
-#   • On infra branches (main/master/develop/release/*/hotfix/*) the hook
-#     does nothing — those commits are usually merges/releases and shouldn't
-#     be rewritten.
-#   • Comments (#...) and trailers are preserved.
+# On a valid IVT branch the task id is extracted and prepended to the subject
+# line. Skipped when the message already contains the id, or on infra branches
+# (main/master/develop/release/*). A preserved commit-msg.pre-ivt is chained
+# afterwards (DCO/sign-off bots keep working); its non-zero exit rejects.
 #
-# Chaining:
-#   A previously-installed commit-msg hook is preserved as
-#   .git/hooks/commit-msg.pre-ivt and run AFTER our rewrite, with the
-#   (possibly modified) message file. If it exits non-zero, the commit is
-#   rejected — that propagation is intentional so e.g. a sign-off or DCO
-#   gate still works.
-#
-# Bypass:
-#   • git commit --no-verify skips this hook entirely.
-#   • IVT_HOOK_SKIP=1 in the environment also skips it (but still chains
-#     the previous hook, so DCO etc. are not accidentally disabled).
+# Bypass: git commit --no-verify skips all hooks; IVT_HOOK_SKIP=1 skips only
+# the ivt prepend while still chaining the previous hook.
 
 set -u
 
 msg_file="$1"
 
-# Resolve this hook's own directory, dereferencing symlinks. Portable across
-# macOS bash 3.2 (BSD readlink, no -f), macOS 12.3+ (readlink -f), and Linux
-# (GNU readlink -f). We inline this rather than sourcing a helper because we
-# need it to locate lib.sh itself.
+# Locate the shared lib, dereferencing the installer's symlink. Portable across
+# bash 3.2 (BSD readlink), macOS 12.3+, and Linux (GNU readlink -f).
 hook_self="$0"
 hook_real="$hook_self"
 if command -v readlink >/dev/null 2>&1 && readlink -f -- / >/dev/null 2>&1; then
@@ -55,58 +38,33 @@ hook_dir="$(cd -P "$(dirname "$hook_real")" >/dev/null 2>&1 && pwd)"
 # shellcheck disable=SC1091
 . "$hook_dir/lib.sh"
 
-# Run any previously-installed commit-msg hook with the (possibly rewritten)
-# message file and propagate its exit status. Defined up front so every exit
-# path can use it. Idempotent: if there's no .pre-ivt file, it's a no-op.
+# Chain any previous commit-msg with the (possibly rewritten) message file,
+# then propagate its exit status.
 chain_and_exit() {
   ivt_chain_next_hook commit-msg "$msg_file"
   exit $?
 }
 
-# ----- bypass for OUR logic only (still chain the previous hook) -------------
-if [ -n "${IVT_HOOK_SKIP:-}" ]; then
-  ivt_hook_debug "IVT_HOOK_SKIP set; skipping ivt logic, still chaining"
-  chain_and_exit
-fi
+[ -n "${IVT_HOOK_SKIP:-}" ] && { ivt_hook_debug "IVT_HOOK_SKIP set; still chaining"; chain_and_exit; }
 
 branch="$(ivt_current_branch)"
 
-# Infra branch → leave message alone.
-if [ -n "$branch" ] && ivt_branch_is_infra "$branch"; then
-  ivt_hook_debug "on infra branch '$branch'; not prepending"
-  chain_and_exit
-fi
+[ -n "$branch" ] && ivt_branch_is_infra "$branch" && chain_and_exit
 
-# No IVT task id in branch name? Then there's nothing to prepend. Note this is
-# NOT a hard reject: commit-msg runs on commits, not branches. If the user is
-# on an invalid branch they were already warned at checkout time.
 task_id=""
-if [ -n "$branch" ] && [[ "$branch" =~ $IVT_TASK_CONTAINED_REGEX ]]; then
+if [ -n "$branch" ] && [[ "$branch" =~ $IVT_TASK_REGEX ]]; then
   task_id="$(ivt_extract_task_id "$branch")"
 fi
+[ -z "$task_id" ] && chain_and_exit
 
-if [ -z "$task_id" ]; then
-  ivt_hook_debug "no IVT task id on branch '$branch'; nothing to prepend"
-  chain_and_exit
-fi
+[ -f "$msg_file" ] || chain_and_exit
 
-# ----- read the message body (strip comment lines) --------------------------
-if [ ! -f "$msg_file" ]; then
-  ivt_hook_debug "msg file '$msg_file' missing; exiting"
-  chain_and_exit
-fi
-
-# Read whole file into a variable. The message is small.
 msg="$(cat "$msg_file")"
 
-# Check if the task id is already mentioned anywhere in the (real) body.
-# Strip comment lines for the check so commented-out notes don't fool us.
+# Skip if the task id is already in the real body (ignore '#' comment lines).
 body_for_check="$(printf '%s\n' "$msg" | grep -v '^[[:space:]]*#' )"
 # shellcheck disable=SC2076
-if [[ "$body_for_check" =~ $IVT_TASK_REGEX ]]; then
-  ivt_hook_debug "task id already present in message; leaving untouched"
-  chain_and_exit
-fi
+[[ "$body_for_check" =~ $IVT_TASK_REGEX ]] && chain_and_exit
 
 # Find the subject: first non-blank, non-comment line.
 subject_line=""
@@ -123,18 +81,11 @@ while IFS= read -r line; do
 done <<EOF
 $msg
 EOF
+[ -z "$subject_line" ] && chain_and_exit
 
-if [ -z "$subject_line" ]; then
-  ivt_hook_debug "empty commit body; nothing to prepend"
-  chain_and_exit
-fi
-
-# Build the new message: replace the subject line in place, keep everything
-# else (other body lines, blank separator, comments) byte-for-byte.
 new_subject="${task_id} ${subject_line}"
 
-# Write the file back. We do a careful line-by-line rewrite so we only touch
-# the subject line.
+# Rewrite the subject line in place; keep all other lines byte-for-byte.
 tmp="$(mktemp "${msg_file}.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
@@ -152,9 +103,7 @@ done <<EOF
 $msg
 EOF
 
-# Preserve the original trailing-newline behaviour: if the original file did
-# NOT end with a newline, strip the one printf added. (git always supplies a
-# trailing newline in practice, but be defensive.)
+# Preserve original trailing-newline behaviour.
 if [ -n "$msg" ] && [ "${msg: -1}" != $'\n' ]; then
   printf '%s' "$(cat "$tmp")" >"$tmp"
 fi
