@@ -103,10 +103,20 @@ if [ -n "$prev_branch" ] && git show-ref --verify --quiet "refs/heads/$prev_bran
 fi
 
 if [ "$restored" -ne 1 ]; then
-  # Fall back to the sha we came from (detached, but safe).
-  if git checkout --quiet "$prev_head" 2>/dev/null; then
-    restored=1
-    echo "[branch policy] ↩ Switched back to previous commit ($prev_head, detached HEAD)." >&2
+  # Previous state was detached HEAD (prev_branch parsed to a sha) or a sha we
+  # can't resolve as a branch. Detach from $new_branch before checking out
+  # $prev_head — otherwise git treats it as a no-op (the new branch sits at the
+  # same commit) and silently leaves HEAD on $new_branch.
+  if git rev-parse --quiet --verify "$prev_head^{commit}" >/dev/null 2>&1; then
+    git checkout --quiet --detach 2>/dev/null
+    if git checkout --quiet "$prev_head" 2>/dev/null; then
+      restored=1
+      # Clean up the just-created invalid branch: in the detached case there's
+      # no valid previous branch for the user to recover, and the lingering ref
+      # would be misleading (HEAD no longer points at it).
+      [ -n "$new_branch" ] && git branch --quiet -D "$new_branch" 2>/dev/null || true
+      echo "[branch policy] ↩ Switched back to previous commit ($prev_head, detached HEAD)." >&2
+    fi
   fi
 fi
 
