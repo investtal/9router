@@ -36,6 +36,12 @@ hook_dir="$(cd -P "$(dirname "$hook_real")" >/dev/null 2>&1 && pwd)"
 # shellcheck disable=SC1091
 . "$hook_dir/lib.sh"
 
+# Guard against infinite recursion: the bounce-back below runs `git checkout`,
+# which re-fires this very hook. IVT_BOUNCING marks that nested run so it exits
+# immediately instead of bouncing again (which, between two invalid branches,
+# would loop forever and peg the CPU).
+[ "${IVT_BOUNCING:-0}" = "1" ] && { ivt_hook_debug "already bouncing; exiting"; exit 0; }
+
 [ -n "${IVT_HOOK_SKIP:-}" ] && { ivt_hook_debug "IVT_HOOK_SKIP set; exiting"; ivt_chain_next_hook post-checkout "$@"; exit 0; }
 
 prev_head="$1"
@@ -80,12 +86,15 @@ ivt_print_policy
 # checkout is "moving from <from> to <new_branch>"; <from> is what we want.
 prev_branch=""
 if command -v git >/dev/null 2>&1; then
+  # Match the reflog line with literal field comparison, not a dynamic regex:
+  # a branch name with regex metacharacters (`.`, `+`, `[`, …) would otherwise
+  # break the match or error out in awk. The format is fixed and space-free —
+  # "checkout: moving from <from> to <to>" — so the destination is the last
+  # field ($NF) and the source is the third-from-last ($(NF-2)).
   prev_branch="$(git reflog --pretty=format:'%gs' HEAD 2>/dev/null \
     | awk -v cur="$new_branch" '
-        $0 ~ ("checkout: moving from .* to "cur"$") {
-          sub(/^checkout: moving from /, "")
-          sub(/ to .*$/, "")
-          print
+        $1 == "checkout:" && $2 == "moving" && $3 == "from" && $NF == cur {
+          print $(NF-2)
           exit
         }
       ')"
@@ -96,7 +105,7 @@ fi
 
 restored=0
 if [ -n "$prev_branch" ] && git show-ref --verify --quiet "refs/heads/$prev_branch" 2>/dev/null; then
-  if git checkout --quiet "$prev_branch" 2>/dev/null; then
+  if IVT_BOUNCING=1 git checkout --quiet "$prev_branch" 2>/dev/null; then
     restored=1
     echo "[branch policy] ↩ Switched back to '$prev_branch'." >&2
   fi
@@ -108,8 +117,8 @@ if [ "$restored" -ne 1 ]; then
   # $prev_head — otherwise git treats it as a no-op (the new branch sits at the
   # same commit) and silently leaves HEAD on $new_branch.
   if git rev-parse --quiet --verify "$prev_head^{commit}" >/dev/null 2>&1; then
-    git checkout --quiet --detach 2>/dev/null
-    if git checkout --quiet "$prev_head" 2>/dev/null; then
+    IVT_BOUNCING=1 git checkout --quiet --detach 2>/dev/null
+    if IVT_BOUNCING=1 git checkout --quiet "$prev_head" 2>/dev/null; then
       restored=1
       # Clean up the just-created invalid branch: in the detached case there's
       # no valid previous branch for the user to recover, and the lingering ref

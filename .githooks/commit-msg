@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # installed-by: ivt-hooks
-# Prepend the current branch's IVT-XXXX task id to the commit message.
+# Append the current branch's IVT-XXXX task id to the commit message.
 #
-# On a valid IVT branch the task id is extracted and prepended to the subject
+# On a valid IVT branch the task id is extracted and appended to the subject
 # line. Skipped when the message already contains the id, or on infra branches
 # (main/master/develop/release/*). A preserved commit-msg.pre-ivt is chained
 # afterwards (DCO/sign-off bots keep working); its non-zero exit rejects.
 #
 # Bypass: git commit --no-verify skips all hooks; IVT_HOOK_SKIP=1 skips only
-# the ivt prepend while still chaining the previous hook.
+# the ivt append while still chaining the previous hook.
 
 set -u
 
@@ -59,56 +59,49 @@ fi
 
 [ -f "$msg_file" ] || chain_and_exit
 
-msg="$(cat "$msg_file")"
+# Skip if the task id is already in the real body. Read straight from the file
+# (ignoring '#' comment lines) — never slurp into a variable, which would strip
+# trailing newlines and let shell expansion mangle the message content.
+if grep -v '^[[:space:]]*#' "$msg_file" | grep -qE "$IVT_TASK_REGEX"; then
+  ivt_hook_debug "task id already present in message; leaving untouched"
+  chain_and_exit
+fi
 
-# Skip if the task id is already in the real body (ignore '#' comment lines).
-body_for_check="$(printf '%s\n' "$msg" | grep -v '^[[:space:]]*#' )"
-# shellcheck disable=SC2076
-[[ "$body_for_check" =~ $IVT_TASK_REGEX ]] && chain_and_exit
-
-# Find the subject: first non-blank, non-comment line.
-subject_line=""
-subject_idx=0
-i=0
-while IFS= read -r line; do
-  i=$((i + 1))
-  case "$line" in
-    ''|\#*) continue ;;
-  esac
-  subject_line="$line"
-  subject_idx="$i"
-  break
-done <<EOF
-$msg
-EOF
-[ -z "$subject_line" ] && chain_and_exit
-
-new_subject="${task_id} ${subject_line}"
-
-# Rewrite the subject line in place; keep all other lines byte-for-byte.
+# Rewrite the subject (first non-blank, non-comment line) in place, appending
+# the task id and keeping every other line — body, blank separators, comments,
+# trailers — byte-for-byte. awk reads the file directly, so backslashes, dollar
+# signs, and backticks in the message are never expanded, and the final line is
+# processed even without a trailing newline. exit 1 ⇒ no eligible subject found.
 tmp="$(mktemp "${msg_file}.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
-i=0
-wrote_subject=0
-while IFS= read -r line || [ -n "$line" ]; do
-  i=$((i + 1))
-  if [ "$i" -eq "$subject_idx" ] && [ "$wrote_subject" -eq 0 ]; then
-    printf '%s\n' "$new_subject" >>"$tmp"
-    wrote_subject=1
-  else
-    printf '%s\n' "$line" >>"$tmp"
-  fi
-done <<EOF
-$msg
-EOF
+awk -v task_id="$task_id" '
+  !done && $0 != "" && $0 !~ /^#/ {
+    print $0 " " task_id
+    done = 1
+    next
+  }
+  { print }
+  END { exit(done ? 0 : 1) }
+' "$msg_file" > "$tmp"
 
-# Preserve original trailing-newline behaviour.
-if [ -n "$msg" ] && [ "${msg: -1}" != $'\n' ]; then
-  printf '%s' "$(cat "$tmp")" >"$tmp"
+if [ $? -ne 0 ]; then
+  ivt_hook_debug "empty commit body; nothing to append"
+  chain_and_exit
+fi
+
+# Preserve the original trailing-newline behaviour. awk always terminates the
+# last record with a newline; if the original file did NOT end with one, strip
+# the single newline awk added. The `printf x` sentinel guards real trailing
+# newlines from command-substitution stripping.
+if [ -s "$msg_file" ] && [ -n "$(tail -c 1 "$msg_file")" ]; then
+  content="$(cat "$tmp"; printf x)"
+  content="${content%x}"
+  content="${content%$'\n'}"
+  printf '%s' "$content" >"$tmp"
 fi
 
 mv "$tmp" "$msg_file"
 trap - EXIT
-ivt_hook_debug "prepended '$task_id' to commit subject"
+ivt_hook_debug "appended '$task_id' to commit subject"
 chain_and_exit
