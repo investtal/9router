@@ -10,9 +10,10 @@ IVT_ALLOWED_PREFIX="release/ hotfix/"
 
 # IVT task id: IVT- followed by EXACTLY 4 digits (0000-9999), then a
 # non-alphanumeric boundary (or end-of-string) so IVT-99999, IVT-0999X, and
-# IVT-69696969 are rejected. Group 1 captures the boundary char so the
-# caller can strip it when extracting the bare id.
-IVT_TASK_REGEX='IVT-[0-9]{4}([^[:alnum:]]|$)'
+# IVT-69696969 are rejected. Group 1 captures the bare id (IVT-XXXX), group 2
+# the boundary char. Spelled-out digit classes instead of `{4}` because the
+# ERE interval quantifier is unreliable on bash 3.2 (stock macOS).
+IVT_TASK_REGEX='(IVT-[0-9][0-9][0-9][0-9])([^[:alnum:]]|$)'
 
 ivt_hook_debug() {
   [ -n "${IVT_HOOK_DEBUG:-}" ] && echo "[ivt-hook] $*" >&2
@@ -75,12 +76,13 @@ EOF
 }
 
 # Extract the bare 4-digit task id ("IVT-0999") from a string, or print empty.
+# Group 1 of the regex captures the bare id directly, so no fragile pattern
+# stripping (the old `${match%${BASH_REMATCH[1]}}` mis-stripped when the
+# boundary char was a glob metacharacter like `*`, `?`, or `[`).
 ivt_extract_task_id() {
   local s="$1"
-  local match
   if [[ "$s" =~ $IVT_TASK_REGEX ]]; then
-    match="${BASH_REMATCH[0]}"
-    printf '%s' "${match%${BASH_REMATCH[1]}}"
+    printf '%s' "${BASH_REMATCH[1]}"
   fi
 }
 
@@ -121,7 +123,9 @@ ivt_resolve_symlink() {
 
 # Absolute directory of the currently-running hook (dereferenced through symlinks).
 ivt_hook_dir() {
-  ivt_resolve_symlink "$0" | { read -r resolved; dirname "$resolved"; }
+  local resolved
+  resolved="$(ivt_resolve_symlink "$0")"
+  dirname "$resolved"
 }
 
 # Chain-execute a sibling hook preserved as <name>.pre-ivt (installed by the
