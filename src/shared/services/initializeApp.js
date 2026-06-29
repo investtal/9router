@@ -17,6 +17,7 @@ import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreTo
 import { startClaudeAutoPing } from "@/shared/services/claudeAutoPing";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { registerCleanup, shutdown, isShutdownInProgress } from "@/lib/shutdownCoordinator";
+import { initCrashLogger } from "@/lib/crashLogger.js";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -48,6 +49,12 @@ const g = global.__appSingleton ??= {
 
 export async function initializeApp() {
   try {
+    // Register global crash handlers as early as possible.
+    // Catches uncaughtException/unhandledRejection and writes a full report
+    // (stack, memory, recent logs) to ~/.9router/crash.log so silent deaths
+    // (OOM, child-process crashes on Ubuntu, etc.) are never invisible.
+    initCrashLogger();
+
     await cleanupProviderConnections();
     const settings = await getSettings();
 
