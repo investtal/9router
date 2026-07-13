@@ -907,7 +907,6 @@ export async function getMemberStats(period = "7d") {
   // For live-history periods (today/24h/all), prompt/cached/cost come from a
   // projected scan; for daily periods the byApiKey agg already supplied them.
   if (!useDaily) {
-    for (const c of cells.values()) { c.requests = 0; c.promptTokens = 0; c.completionTokens = 0; c.cachedTokens = 0; c.cost = 0; c.lastUsed = ""; }
     const sumRows = db.all(
       `SELECT apiKey, model, provider, promptTokens, completionTokens, cost, tokens, timestamp
        FROM usageHistory
