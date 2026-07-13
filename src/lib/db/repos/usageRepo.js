@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { computeTpsStats } from "./tpsStats.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -814,3 +815,131 @@ export async function getRecentLogs(limit = 200) {
     return [];
   }
 }
+
+// ─── Per-member effectiveness ─────────────────────────────────────────────
+const MEMBER_PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
+
+export function windowCutoff(period) {
+  if (period === "today") {
+    const s = new Date(); s.setHours(0, 0, 0, 0); return s.toISOString();
+  }
+  if (period === "24h") return new Date(Date.now() - PERIOD_MS["24h"]).toISOString();
+  if (period === "7d") return new Date(Date.now() - 7 * 86400000).toISOString();
+  if (period === "30d") return new Date(Date.now() - 30 * 86400000).toISOString();
+  if (period === "60d") return new Date(Date.now() - 60 * 86400000).toISOString();
+  return null; // all
+}
+
+export async function getMemberStats(period = "7d") {
+  if (!MEMBER_PERIODS.has(period)) period = "7d";
+  const db = await getAdapter();
+
+  const [{ getApiKeys }, { getProviderNodes }] = await Promise.all([
+    import("./apiKeysRepo.js"),
+    import("./nodesRepo.js"),
+  ]);
+
+  const apiKeyMap = {};
+  try {
+    for (const k of await getApiKeys()) apiKeyMap[k.key] = { id: k.id, name: k.name };
+  } catch {}
+
+  const providerNodeNameMap = {};
+  try {
+    for (const n of await getProviderNodes()) if (n.id && n.name) providerNodeNameMap[n.id] = n.name;
+  } catch {}
+
+  const cells = new Map(); // key: apiKey|model|provider -> accumulator
+
+  function touch(apiKeyVal, model, provider) {
+    const providerDisplayName = providerNodeNameMap[provider] || provider || "";
+    const k = `${apiKeyVal}|${model}|${provider || "unknown"}`;
+    if (!cells.has(k)) {
+      const info = apiKeyVal && apiKeyVal !== "local-no-key" ? apiKeyMap[apiKeyVal] : null;
+      cells.set(k, {
+        id: info?.id || null,
+        apiKey: apiKeyVal,
+        apiKeyMasked: apiKeyVal && apiKeyVal !== "local-no-key" ? maskApiKey(apiKeyVal) : null,
+        keyName: info?.name || (apiKeyVal && apiKeyVal !== "local-no-key" ? maskApiKey(apiKeyVal) : "Local (No API Key)"),
+        model, provider: providerDisplayName,
+        requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0,
+        _tpsRows: [], lastUsed: "",
+      });
+    }
+    return cells.get(k);
+  }
+
+  const cutoff = windowCutoff(period);
+  const useDaily = period !== "today" && period !== "24h" && period !== "all";
+
+  if (useDaily) {
+    const maxDays = period === "7d" ? 7 : period === "30d" ? 30 : 60;
+    for (const dr of loadDaysInRange(db, maxDays)) {
+      const day = parseJson(dr.data, {});
+      for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
+        const [apiKeyVal, model, provider] = akKey.split("|");
+        const c = touch(apiKeyVal || "local-no-key", model, provider);
+        c.requests += ak.requests || 0;
+        c.promptTokens += ak.promptTokens || 0;
+        c.completionTokens += ak.completionTokens || 0;
+        c.cachedTokens += ak.cachedTokens || 0;
+        c.cost += ak.cost || 0;
+        if (dr.dateKey > c.lastUsed) c.lastUsed = dr.dateKey;
+      }
+    }
+  }
+
+  // Per-request TPS samples (all periods). Single indexed scan in window.
+  const tpsRows = db.all(
+    `SELECT apiKey, model, provider, completionTokens, latencyTotalMs, latencyTtftMs, timestamp
+     FROM usageHistory
+     ${cutoff ? "WHERE timestamp >= ?" : ""}
+     ORDER BY id ASC`,
+    cutoff ? [cutoff] : []
+  );
+  for (const r of tpsRows) {
+    const apiKeyVal = r.apiKey && typeof r.apiKey === "string" ? r.apiKey : "local-no-key";
+    const c = touch(apiKeyVal, r.model, r.provider);
+    c._tpsRows.push({ completionTokens: r.completionTokens, latencyTotalMs: r.latencyTotalMs, latencyTtftMs: r.latencyTtftMs });
+    if (r.timestamp > c.lastUsed) c.lastUsed = r.timestamp;
+  }
+
+  // For live-history periods (today/24h/all), prompt/cached/cost come from a
+  // projected scan; for daily periods the byApiKey agg already supplied them.
+  if (!useDaily) {
+    for (const c of cells.values()) { c.requests = 0; c.promptTokens = 0; c.completionTokens = 0; c.cachedTokens = 0; c.cost = 0; c.lastUsed = ""; }
+    const sumRows = db.all(
+      `SELECT apiKey, model, provider, promptTokens, completionTokens, cost, tokens, timestamp
+       FROM usageHistory
+       ${cutoff ? "WHERE timestamp >= ?" : ""}`,
+      cutoff ? [cutoff] : []
+    );
+    for (const r of sumRows) {
+      const apiKeyVal = r.apiKey && typeof r.apiKey === "string" ? r.apiKey : "local-no-key";
+      const c = touch(apiKeyVal, r.model, r.provider);
+      const tk = parseJson(r.tokens, {});
+      c.requests += 1;
+      c.promptTokens += r.promptTokens || 0;
+      c.completionTokens += r.completionTokens || 0;
+      c.cachedTokens += tk.cached_tokens || tk.cache_read_input_tokens || 0;
+      c.cost += r.cost || 0;
+      if (r.timestamp > c.lastUsed) c.lastUsed = r.timestamp;
+    }
+  }
+
+  const out = [];
+  for (const c of cells.values()) {
+    const tps = computeTpsStats(c._tpsRows);
+    out.push({
+      id: c.id, apiKey: c.apiKey, apiKeyMasked: c.apiKeyMasked, keyName: c.keyName,
+      model: c.model, provider: c.provider,
+      requests: c.requests, promptTokens: c.promptTokens, completionTokens: c.completionTokens,
+      cachedTokens: c.cachedTokens, cost: c.cost,
+      meanTPS: tps.meanTPS, p50TPS: tps.p50TPS, p95TPS: tps.p95TPS, throughputTPS: tps.throughputTPS,
+      lastUsed: c.lastUsed,
+    });
+  }
+  out.sort((a, b) => b.cost - a.cost || b.requests - a.requests);
+  return out;
+}
+
