@@ -73,7 +73,7 @@ export default function MembersTab({ period }) {
               {COLS.map((c) => (
                 <td key={c.key} className="px-2 py-1 font-mono">
                   {c.key === "lastUsed"
-                    ? r.lastUsed ? new Date(r.lastUsed).toLocaleString() : "—"
+                    ? r.lastUsed ? <span suppressHydrationWarning>{new Date(r.lastUsed).toLocaleString()}</span> : "—"
                     : fmt(r[c.key])}
                 </td>
               ))}
