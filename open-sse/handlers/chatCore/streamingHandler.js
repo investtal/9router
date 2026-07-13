@@ -113,7 +113,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
     const latency = {
-      ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
+      ttft: ttftAt ? ttftAt - requestStartTime : 0,
       total: Date.now() - requestStartTime
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";

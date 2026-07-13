@@ -21,6 +21,8 @@ export function computeTpsStats(rows) {
     const total = r?.latencyTotalMs || 0;
     if (completion <= 0 || total <= 0) continue;
     const ttft = r?.latencyTtftMs || 0;
+    // Skip degenerate samples where no real TTFT was captured (ttft >= total would clamp genMs to 1ms and inflate TPS ~1000x). ponytail: ceiling = a caller sending bad latency; upgrade = measure real TTFT on every path.
+    if (ttft >= total) continue;
     const genMs = Math.max(total - ttft, 1);
     const genSeconds = genMs / 1000;
     samples.push(completion / genSeconds);
