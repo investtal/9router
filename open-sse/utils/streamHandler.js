@@ -207,7 +207,10 @@ function createKeepaliveStream(keepaliveMs) {
   const arm = () => {
     clear();
     timer = setTimeout(() => {
-      try { ctrl?.enqueue(encoder.encode(": ka\n\n")); }
+      try {
+        ctrl?.enqueue(encoder.encode(": ka\n\n"));
+        arm();
+      }
       catch { /* stream closed/errored */ clear(); }
     }, keepaliveMs);
     if (typeof timer.unref === "function") timer.unref();

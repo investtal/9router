@@ -58,6 +58,25 @@ describe("client keepalive heartbeat (pipeWithDisconnect)", () => {
     expect(text).toContain(": ka");
   });
 
+  it("keeps emitting keepalives on long upstream silence (continuous heartbeat)", async () => {
+    // Regression: setTimeout fires once. Without re-arming inside the callback,
+    // only one ": ka" is emitted no matter how long upstream stays silent.
+    // Read across ~4 intervals and require ≥3 keepalives (proves re-arm).
+    const silentUpstream = new ReadableStream({ start() {} });
+    const out = pipeWithDisconnect(
+      new Response(silentUpstream),
+      new TransformStream(),
+      makeController(),
+      null,
+      60_000,
+      { clientKeepaliveMs: 20 }
+    );
+
+    const text = await readForMs(out, 100);
+    const count = (text.match(/: ka/g) || []).length;
+    expect(count).toBeGreaterThanOrEqual(3);
+  });
+
   it("does not emit keepalive while upstream chunks flow within interval", async () => {
     // Chunks every 10ms, keepalive interval 50ms → timer always re-armed before firing.
     const flowing = new ReadableStream({
