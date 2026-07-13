@@ -30,7 +30,8 @@ function stripRawKey(cell) {
 function toCsv(rows) {
   const escape = (v) => {
     if (v === null || v === undefined) return "";
-    const s = String(v);
+    let s = String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralize CSV formula injection (keyName is user-controlled)
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [COLUMNS.join(",")];
@@ -46,12 +47,10 @@ export async function GET(request) {
       return NextResponse.json({ error: "Invalid period" }, { status: 400 });
     }
     const model = searchParams.get("model");
-    const apiKey = searchParams.get("apiKey");
     const format = searchParams.get("format") === "csv" ? "csv" : "json";
 
     let rows = await getMemberStats(period);
     if (model) rows = rows.filter((r) => r.model === model);
-    if (apiKey) rows = rows.filter((r) => r.apiKey === apiKey);
     const members = rows.map(stripRawKey);
 
     if (format === "csv") {
