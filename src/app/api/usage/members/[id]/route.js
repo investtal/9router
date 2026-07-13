@@ -12,7 +12,7 @@ export async function GET(request, { params }) {
     if (!VALID_PERIODS.has(period)) {
       return NextResponse.json({ error: "Invalid period" }, { status: 400 });
     }
-    const id = params?.id;
+    const { id } = await params;
     if (!id) return NextResponse.json({ error: "Missing member id" }, { status: 400 });
 
     const detail = await getMemberDetail({ apiKeyId: id, period });
