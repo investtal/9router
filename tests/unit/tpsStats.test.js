@@ -37,10 +37,14 @@ describe("computeTpsStats", () => {
     // throughput = sum(completion)/sum(genSeconds) = 1900 / (1+0.5+2) = 542.857
     expect(r.throughputTPS).toBeCloseTo(1900 / 3.5, 5);
   });
-  it("clamps genMs to >=1 when ttft exceeds total", () => {
-    const r = computeTpsStats([{ completionTokens: 100, latencyTotalMs: 50, latencyTtftMs: 80 }]);
-    expect(r.sampleCount).toBe(1);
-    // genMs = max(50-80,1)=1 -> 100/0.001 = 100000
-    expect(r.meanTPS).toBe(100000);
+  it("skips degenerate samples where ttft >= total (no real TTFT captured)", () => {
+    // ttft >= total would clamp genMs to 1ms and inflate TPS ~1000x; guard rejects the sample.
+    const r = computeTpsStats([
+      { completionTokens: 100, latencyTotalMs: 50, latencyTtftMs: 80 },   // ttft > total
+      { completionTokens: 100, latencyTotalMs: 50, latencyTtftMs: 50 },   // ttft == total boundary
+    ]);
+    expect(r.sampleCount).toBe(0);
+    expect(r.meanTPS).toBeNull();
+    expect(r.throughputTPS).toBeNull();
   });
 });
