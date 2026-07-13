@@ -1,3 +1,8 @@
+# Unreleased
+
+## Features
+- **Usage**: per-member effectiveness — new Members dashboard tab plus `GET /api/usage/members` (JSON/CSV) and `GET /api/usage/members/:id`. Tracks input/output tokens and TPS (mean / p50 / p95 / throughput) per model × API key via a new additive `usageHistory` latency column (migration 0002). One API key = one member.
+
 # v0.6.0 (2026-07-09)
 
 ## Features
