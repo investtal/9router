@@ -830,7 +830,7 @@ export function windowCutoff(period) {
   return null; // all
 }
 
-export async function getMemberStats(period = "7d") {
+export async function getMemberStats(period = "7d", filterApiKey = null) {
   if (!MEMBER_PERIODS.has(period)) period = "7d";
   const db = await getAdapter();
 
@@ -878,6 +878,7 @@ export async function getMemberStats(period = "7d") {
       const day = parseJson(dr.data, {});
       for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
         const [apiKeyVal, model, provider] = akKey.split("|");
+        if (filterApiKey && apiKeyVal !== filterApiKey) continue;
         const c = touch(apiKeyVal || "local-no-key", model, provider);
         c.requests += ak.requests || 0;
         c.promptTokens += ak.promptTokens || 0;
@@ -893,9 +894,10 @@ export async function getMemberStats(period = "7d") {
   const tpsRows = db.all(
     `SELECT apiKey, model, provider, completionTokens, latencyTotalMs, latencyTtftMs, timestamp
      FROM usageHistory
-     ${cutoff ? "WHERE timestamp >= ?" : ""}
+     WHERE completionTokens > 0 AND latencyTotalMs > 0 AND latencyTtftMs < latencyTotalMs
+       ${cutoff ? "AND timestamp >= ?" : ""}${filterApiKey ? " AND apiKey = ?" : ""}
      ORDER BY id ASC`,
-    cutoff ? [cutoff] : []
+    [...(cutoff ? [cutoff] : []), ...(filterApiKey ? [filterApiKey] : [])]
   );
   for (const r of tpsRows) {
     const apiKeyVal = r.apiKey && typeof r.apiKey === "string" ? r.apiKey : "local-no-key";
@@ -910,8 +912,8 @@ export async function getMemberStats(period = "7d") {
     const sumRows = db.all(
       `SELECT apiKey, model, provider, promptTokens, completionTokens, cost, tokens, timestamp
        FROM usageHistory
-       ${cutoff ? "WHERE timestamp >= ?" : ""}`,
-      cutoff ? [cutoff] : []
+       WHERE 1=1 ${cutoff ? "AND timestamp >= ?" : ""}${filterApiKey ? " AND apiKey = ?" : ""}`,
+      [...(cutoff ? [cutoff] : []), ...(filterApiKey ? [filterApiKey] : [])]
     );
     for (const r of sumRows) {
       const apiKeyVal = r.apiKey && typeof r.apiKey === "string" ? r.apiKey : "local-no-key";
@@ -963,8 +965,7 @@ export async function getMemberDetail({ apiKeyId, apiKey, period = "7d" } = {}) 
   }
   if (!resolvedKey) return null;
 
-  const all = await getMemberStats(period);
-  const byModel = all.filter((c) => c.apiKey === resolvedKey);
+  const byModel = (await getMemberStats(period, resolvedKey)).filter((c) => c.apiKey === resolvedKey);
   if (!byModel.length && !meta) return null;
 
   // Totals across all the member's models on the SAME per-request basis.
@@ -972,7 +973,9 @@ export async function getMemberDetail({ apiKeyId, apiKey, period = "7d" } = {}) 
   const cutoff = windowCutoff(period);
   const tpsRows = db.all(
     `SELECT completionTokens, latencyTotalMs, latencyTtftMs FROM usageHistory
-     WHERE apiKey = ? ${cutoff ? "AND timestamp >= ?" : ""}`,
+     WHERE apiKey = ?
+       AND completionTokens > 0 AND latencyTotalMs > 0 AND latencyTtftMs < latencyTotalMs
+       ${cutoff ? "AND timestamp >= ?" : ""}`,
     cutoff ? [resolvedKey, cutoff] : [resolvedKey]
   );
   const totals = computeTpsStats(tpsRows);
