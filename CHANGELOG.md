@@ -1,7 +1,17 @@
 # Unreleased
 
+# v0.7.0 (2026-07-13)
+
 ## Features
 - **Usage**: per-member effectiveness — new Members dashboard tab plus `GET /api/usage/members` (JSON/CSV) and `GET /api/usage/members/:id`. Tracks input/output tokens and TPS (mean / p50 / p95 / throughput) per model × API key via a new additive `usageHistory` latency column (migration 0002). One API key = one member.
+
+## Fixes
+- **Stream**: re-arm client keepalive timer for continuous heartbeat on silent upstream IVT-0666
+- **Usage**: stop TPS inflation when no real TTFT captured (SSE→JSON path); defensive guard in `computeTpsStats`
+- **API**: await `params` on `members/:id` (Next 16 Promise contract), drop raw-key query filter, harden CSV export against formula injection
+
+## Performance
+- **Usage**: filter `getMemberStats` by `apiKey` at SQL level (single-member detail path); push degenerate-row guards into SQL
 
 # v0.6.0 (2026-07-09)
 
