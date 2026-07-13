@@ -45,6 +45,20 @@ describe("GET /api/usage/members", () => {
     expect(text).toContain("alice");
     expect(text).not.toContain("sk-secret");
   });
+
+  it("CSV escapes formula-injection cells (keyName starting with = + - @)", async () => {
+    vi.mocked(getMemberStats).mockResolvedValue([
+      { id: "x", apiKey: "sk-x", apiKeyMasked: "sk-x***", keyName: "=cmd|'calc'!A1",
+        model: "opus", provider: "p", requests: 1, promptTokens: 1,
+        completionTokens: 1, cachedTokens: 0, cost: 0, meanTPS: 1, p50TPS: 1, p95TPS: 1,
+        throughputTPS: 1, lastUsed: "2026-07-13T00:00:00.000Z" },
+    ]);
+    const { GET } = await import("../../src/app/api/usage/members/route.js");
+    const res = await GET(new Request("http://x/api/usage/members?period=all&format=csv"));
+    const text = await res.text();
+    // leading = neutralized with ' prefix so Excel/Sheets won't evaluate it
+    expect(text).toContain("'=cmd|'calc'!A1");
+  });
 });
 
 describe("GET /api/usage/members/[id]", () => {
@@ -56,23 +70,24 @@ describe("GET /api/usage/members/[id]", () => {
       byModel: [{ id: "u1", model: "opus", provider: "Anthropic", requests: 5, cost: 3, meanTPS: 50, p50TPS: 50, p95TPS: 60, throughputTPS: 48, lastUsed: "2026-07-13T00:00:00.000Z" }],
     });
     const { GET } = await import("../../src/app/api/usage/members/[id]/route.js");
-    const res = await GET(new Request("http://x/api/usage/members/u1?period=30d"), { params: { id: "u1" } });
+    const res = await GET(new Request("http://x/api/usage/members/u1?period=30d"), { params: Promise.resolve({ id: "u1" }) });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.member.keyName).toBe("alice");
     expect(body.totals.throughputTPS).toBe(48);
+    expect(body.byModel[0].apiKey).toBeUndefined();
   });
 
   it("returns 404 when member not found", async () => {
     vi.mocked(getMemberDetail).mockResolvedValue(null);
     const { GET } = await import("../../src/app/api/usage/members/[id]/route.js");
-    const res = await GET(new Request("http://x/api/usage/members/unknown?period=30d"), { params: { id: "unknown" } });
+    const res = await GET(new Request("http://x/api/usage/members/unknown?period=30d"), { params: Promise.resolve({ id: "unknown" }) });
     expect(res.status).toBe(404);
   });
 
   it("returns 400 on invalid period", async () => {
     const { GET } = await import("../../src/app/api/usage/members/[id]/route.js");
-    const res = await GET(new Request("http://x/api/usage/members/u1?period=nope"), { params: { id: "u1" } });
+    const res = await GET(new Request("http://x/api/usage/members/u1?period=nope"), { params: Promise.resolve({ id: "u1" }) });
     expect(res.status).toBe(400);
   });
 });
