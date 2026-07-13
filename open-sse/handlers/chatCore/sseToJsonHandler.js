@@ -125,13 +125,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
       const usage = jsonResponse.usage || {};
       appendLog({ tokens: usage, status: "200 OK" });
       const totalLatency = Date.now() - requestStartTime;
-      saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: totalLatency, total: totalLatency } });
+      saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: 0, total: totalLatency } });
 
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
 
       saveRequestDetail(buildRequestDetail({
         ...ctx,
-        latency: { ttft: totalLatency, total: totalLatency },
+        latency: { ttft: 0, total: totalLatency },
         tokens: { prompt_tokens: usage.input_tokens || 0, completion_tokens: usage.output_tokens || 0 },
         response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
         status: "success"
@@ -201,11 +201,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
     const usage = parsed.usage || {};
     appendLog({ tokens: usage, status: "200 OK" });
     const totalLatency = Date.now() - requestStartTime;
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: totalLatency, total: totalLatency } });
+    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: 0, total: totalLatency } });
 
     saveRequestDetail(buildRequestDetail({
       ...ctx,
-      latency: { ttft: totalLatency, total: totalLatency },
+      latency: { ttft: 0, total: totalLatency },
       tokens: usage,
       response: {
         content: parsed.choices?.[0]?.message?.content || null,
