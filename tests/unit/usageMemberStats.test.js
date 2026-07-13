@@ -95,3 +95,26 @@ describe("getMemberStats", () => {
     expect(cell.apiKeyMasked).toBe("sk-12345***");
   });
 });
+
+describe("getMemberDetail", () => {
+  it("returns member + totals + byModel", async () => {
+    const { createApiKey, saveRequestUsage, getMemberDetail } = await import("@/lib/db/index.js");
+    const key = await createApiKey("carol", "machine-carol"); // repo generates key.key
+
+    // model A: 600 tok / 1.0s ; model B: 1000 tok / 1.0s
+    await saveRequestUsage({ provider: "anthropic", model: "opus", tokens: { prompt_tokens: 10, completion_tokens: 600 }, apiKey: key.key, latencyTotalMs: 1100, latencyTtftMs: 100 });
+    await saveRequestUsage({ provider: "anthropic", model: "haiku", tokens: { prompt_tokens: 10, completion_tokens: 1000 }, apiKey: key.key, latencyTotalMs: 1100, latencyTtftMs: 100 });
+
+    const detail = await getMemberDetail({ apiKeyId: key.id, period: "all" });
+    expect(detail.member.keyName).toBe("carol");
+    expect(detail.byModel.length).toBe(2);
+    // totals across both: 1600 tok / 2.0 s = 800 tps
+    expect(detail.totals.throughputTPS).toBeCloseTo(800, 3);
+    expect(detail.totals.completionTokens).toBe(1600);
+  });
+
+  it("returns null for unknown id", async () => {
+    const { getMemberDetail } = await import("@/lib/db/index.js");
+    expect(await getMemberDetail({ apiKeyId: "does-not-exist", period: "all" })).toBeNull();
+  });
+});

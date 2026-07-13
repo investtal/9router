@@ -943,3 +943,56 @@ export async function getMemberStats(period = "7d") {
   return out;
 }
 
+export async function getMemberDetail({ apiKeyId, apiKey, period = "7d" } = {}) {
+  if (!MEMBER_PERIODS.has(period)) period = "7d";
+  const { getApiKeyById, getApiKeys } = await import("./apiKeysRepo.js");
+
+  let resolvedKey = apiKey;
+  let meta = null;
+
+  if (apiKeyId) {
+    const row = await getApiKeyById(apiKeyId);
+    if (!row) return null;
+    resolvedKey = row.key;
+    meta = row;
+  } else if (resolvedKey) {
+    try {
+      for (const k of await getApiKeys()) {
+        if (k.key === resolvedKey) { meta = k; break; }
+      }
+    } catch {}
+  }
+  if (!resolvedKey) return null;
+
+  const all = await getMemberStats(period);
+  const byModel = all.filter((c) => c.apiKey === resolvedKey);
+  if (!byModel.length && !meta) return null;
+
+  // Totals across all the member's models on the SAME per-request basis.
+  const db = await getAdapter();
+  const cutoff = windowCutoff(period);
+  const tpsRows = db.all(
+    `SELECT completionTokens, latencyTotalMs, latencyTtftMs FROM usageHistory
+     WHERE apiKey = ? ${cutoff ? "AND timestamp >= ?" : ""}`,
+    cutoff ? [resolvedKey, cutoff] : [resolvedKey]
+  );
+  const totals = computeTpsStats(tpsRows);
+  totals.requests = byModel.reduce((s, c) => s + c.requests, 0);
+  totals.promptTokens = byModel.reduce((s, c) => s + c.promptTokens, 0);
+  totals.completionTokens = byModel.reduce((s, c) => s + c.completionTokens, 0);
+  totals.cachedTokens = byModel.reduce((s, c) => s + c.cachedTokens, 0);
+  totals.cost = byModel.reduce((s, c) => s + c.cost, 0);
+  totals.lastUsed = byModel.reduce((s, c) => (c.lastUsed > s ? c.lastUsed : s), "");
+
+  return {
+    member: {
+      id: meta?.id || apiKeyId || null,
+      keyName: meta?.name || maskApiKey(resolvedKey),
+      apiKeyMasked: maskApiKey(resolvedKey),
+      createdAt: meta?.createdAt || null,
+    },
+    totals,
+    byModel: byModel.map((c) => ({ ...c, apiKey: undefined, apiKeyMasked: undefined })),
+  };
+}
+
