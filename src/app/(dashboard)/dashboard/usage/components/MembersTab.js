@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { sortMemberRows } from "./membersTable.js";
+import { sortMemberRows, groupMemberRows } from "./membersTable.js";
 
 const COLS = [
   { key: "keyName", label: "Member" },
@@ -22,12 +22,17 @@ function fmt(n) {
   return n;
 }
 
+function lastUsedCell(v) {
+  return v ? <span suppressHydrationWarning>{new Date(v).toLocaleString()}</span> : "—";
+}
+
 export default function MembersTab({ period }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortBy, setSortBy] = useState("cost");
   const [sortDir, setSortDir] = useState("desc");
+  const [expanded, setExpanded] = useState(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -40,16 +45,30 @@ export default function MembersTab({ period }) {
     return () => { cancelled = true; };
   }, [period]);
 
-  const sorted = useMemo(() => sortMemberRows(rows, sortBy, sortDir), [rows, sortBy, sortDir]);
+  const groups = useMemo(() => groupMemberRows(rows), [rows]);
+  const sortedGroups = useMemo(() => {
+    const order = sortMemberRows(groups.map((g) => g.summary), sortBy, sortDir);
+    const byKey = new Map(groups.map((g) => [g.summary.id || g.summary.keyName, g]));
+    return order.map((s) => byKey.get(s.id || s.keyName));
+  }, [groups, sortBy, sortDir]);
 
   function toggle(k) {
     if (k === sortBy) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortBy(k); setSortDir("desc"); }
   }
 
+  function toggleExpand(key) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   if (loading) return <div className="text-muted">Loading…</div>;
   if (error) return <div className="text-red-500">Failed to load: {error}</div>;
-  if (!sorted.length) return <div className="text-muted">No member usage in this period.</div>;
+  if (!sortedGroups.length) return <div className="text-muted">No member usage in this period.</div>;
 
   return (
     <div className="overflow-x-auto">
@@ -68,21 +87,53 @@ export default function MembersTab({ period }) {
           </tr>
         </thead>
         <tbody>
-          {sorted.map((r, i) => (
-            <tr key={`${r.id || r.keyName}-${r.model}-${i}`} className="border-t border-border">
-              {COLS.map((c) => (
-                <td key={c.key} className="px-2 py-1 font-mono">
-                  {c.key === "lastUsed"
-                    ? r.lastUsed ? <span suppressHydrationWarning>{new Date(r.lastUsed).toLocaleString()}</span> : "—"
-                    : fmt(r[c.key])}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {sortedGroups.flatMap((g) => {
+            const key = g.summary.id || g.summary.keyName;
+            const isOpen = expanded.has(key);
+            const out = [
+              <tr
+                key={`g-${key}`}
+                onClick={() => toggleExpand(key)}
+                className="cursor-pointer border-t border-border bg-muted/30 hover:bg-muted/50"
+              >
+                <td className="px-2 py-1 font-mono">{isOpen ? "▼ " : "▶ "}{g.summary.keyName}</td>
+                <td className="px-2 py-1 font-mono text-muted">{g.cells.length} model{g.cells.length === 1 ? "" : "s"}</td>
+                <td className="px-2 py-1 font-mono">{fmt(g.summary.requests)}</td>
+                <td className="px-2 py-1 font-mono">{fmt(g.summary.promptTokens)}</td>
+                <td className="px-2 py-1 font-mono">{fmt(g.summary.completionTokens)}</td>
+                <td className="px-2 py-1 font-mono">—</td>
+                <td className="px-2 py-1 font-mono">—</td>
+                <td className="px-2 py-1 font-mono">—</td>
+                <td className="px-2 py-1 font-mono">—</td>
+                <td className="px-2 py-1 font-mono">{fmt(g.summary.cost)}</td>
+                <td className="px-2 py-1 font-mono">{lastUsedCell(g.summary.lastUsed)}</td>
+              </tr>,
+            ];
+            if (isOpen) {
+              for (const r of g.cells) {
+                out.push(
+                  <tr key={`c-${key}-${r.model}-${r.provider}`} className="border-t border-border bg-muted/10">
+                    <td className="px-2 py-1 font-mono"></td>
+                    <td className="px-2 py-1 pl-6 font-mono">{r.model}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.requests)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.promptTokens)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.completionTokens)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.meanTPS)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.p50TPS)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.p95TPS)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.throughputTPS)}</td>
+                    <td className="px-2 py-1 font-mono">{fmt(r.cost)}</td>
+                    <td className="px-2 py-1 font-mono">{lastUsedCell(r.lastUsed)}</td>
+                  </tr>
+                );
+              }
+            }
+            return out;
+          })}
         </tbody>
       </table>
       <p className="mt-2 text-xs text-muted">
-        TPS = output tokens / generation seconds. Cells with no latency data show —. Throughput is weighted by generation time, not the mean of per-request TPS.
+        TPS = output tokens / generation seconds. Cells with no latency data show —. Throughput is weighted by generation time, not the mean of per-request TPS. Summary rows show totals; expand a member for per-model TPS.
       </p>
     </div>
   );
