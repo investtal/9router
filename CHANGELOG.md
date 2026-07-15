@@ -1,5 +1,10 @@
 # Unreleased
 
+# v0.8.0 (2026-07-15)
+
+## Features
+- **Usage**: group Members dashboard tab by member — one expandable summary row per member (Σ requests / input / output / cost, last used) with click-to-expand per-model sub-rows showing full TPS (mean / p50 / p95 / throughput). Pure client-side change; no API or schema change IVT-0819
+
 # v0.7.0 (2026-07-13)
 
 ## Features
