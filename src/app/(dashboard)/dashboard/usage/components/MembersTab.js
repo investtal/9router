@@ -23,7 +23,9 @@ function fmt(n) {
 }
 
 function lastUsedCell(v) {
-  return v ? <span suppressHydrationWarning>{new Date(v).toLocaleString()}</span> : "—";
+  if (!v) return "—";
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? "—" : <span suppressHydrationWarning>{d.toLocaleString()}</span>;
 }
 
 export default function MembersTab({ period }) {
@@ -48,8 +50,7 @@ export default function MembersTab({ period }) {
   const groups = useMemo(() => groupMemberRows(rows), [rows]);
   const sortedGroups = useMemo(() => {
     const order = sortMemberRows(groups.map((g) => g.summary), sortBy, sortDir);
-    const byKey = new Map(groups.map((g) => [g.summary.id || g.summary.keyName, g]));
-    return order.map((s) => byKey.get(s.id || s.keyName));
+    return order.map((s) => groups.find((g) => g.summary === s));
   }, [groups, sortBy, sortDir]);
 
   function toggle(k) {
