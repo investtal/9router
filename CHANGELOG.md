@@ -1,5 +1,65 @@
 # Unreleased
 
+# v0.9.0 (2026-07-23)
+
+Sync with decolua upstream `v0.5.18` → `v0.5.40` (22 upstream patch releases). Fork history squashed onto upstream master; all investtal fork features (Members dashboard tab, per-member usage effectiveness, vinext CLI build, pm2) carry forward.
+
+## Features — upstream sync
+- **Cursor**: HTTP/2 AgentService support + version bump 3.12.17 (v0.5.40)
+- **i18n**: Khmer (km) translations (v0.5.40)
+- **Kimi**: merge OAuth into dual-auth provider, add K3 / K2.7 models (v0.5.40)
+- **Dashboard**: ProviderTopology flow animation (v0.5.40)
+- **xAI**: Grok Imagine video generation (`/v1/videos`) + CLI (v0.5.35)
+- **GitHub Copilot**: route Claude models through Copilot's native `/v1/messages` (v0.5.35)
+- **Kiro**: GPT-5.6 model family (v0.5.35, #2596)
+- **RTK**: `X-9Router-Token-Saver` header to bypass token savers per request (v0.5.35)
+- **Providers**: quota visibility settings (v0.5.35)
+- **Grok CLI / Grok Build**: OAuth device-code flow, per-subagent model selection (v0.5.30 #2502, v0.5.35)
+- **Perplexity**: Agent API provider (v0.5.30 #2492)
+- **Featherless**: OpenAI-compatible provider presets (v0.5.30)
+- **SearXNG**: endpoint via `SEARXNG_URL` env (v0.5.30 #2499)
+- **Headroom**: extras detection + install/activate/uninstall UI (v0.5.30 #2403)
+- **PXPipe**: multimodal prompt compression token saver (v0.5.30 #2465)
+- **Proxy-Pools**: auto-rotate strategy for no-auth providers (v0.5.30 #2409)
+- **Thinking**: per-model thinking level picker on provider page (v0.5.20)
+- **i18n**: Thai (th) + Farsi (fa) translations (v0.5.35, v0.5.20 #2385)
+- **CLI tools**: Grok Build subagent model configuration (v0.5.40, v0.5.35)
+- **Models**: max thinking level for gpt-5.6-sol; populate capabilities for live-catalog LLMs (v0.5.35, v0.5.30)
+
+## Fixes — upstream sync
+- **DB**: resolve better-sqlite3 parameter array binding crash (v0.5.40); backup on schema change, MCP child cleanup, usage providers OOM (v0.5.30)
+- **Translator**: pass `service_tier` through OpenAI → Responses (v0.5.40); strip `client_metadata` on openai-responses → openai (v0.5.35); preserve developer instructions (v0.5.20 #2434)
+- **Kiro**: map GPT-5.6 / GPT reasoning effort fields, validate terminal streams (v0.5.40)
+- **Codex**: current `client_version` + refresh-aware model sync (v0.5.40); handle fast tier + capacity SSE (v0.5.30 #2452); avoid bare-email OAuth dedup (v0.5.30 #2477)
+- **Alicode-intl**: split into Coding Plan + Model Studio providers; DashScope compatible-mode endpoint (v0.5.40, v0.5.35)
+- **Anthropic**: lowercase `anthropic-version` header to prevent `/v1/messages` duplication (v0.5.35)
+- **Providers**: bulk-add keys no longer overwrite existing (gap-fill `Key N`) (v0.5.35)
+- **Grok CLI**: align with subscription protocol (#2590); surface `expiresAt` for proactive refresh (#2546) (v0.5.35)
+- **OpenAI-to-Claude**: unwrap bare `{function:{…}}` tools without parent type (v0.5.30 #2473)
+- **Translator**: clamp thinking effort max → xhigh for OpenAI format (v0.5.30 #2466)
+- **Volcengine-ark**: clamp Kimi `max_tokens` to 32768; clamp GLM-5 max_tokens to output ceiling (v0.5.30, v0.5.20 #2428)
+- **Claude**: reconcile `max_tokens` vs thinking budget, lift per-model ceiling (v0.5.20 #2381)
+- **Kimi**: normalize `reasoning_effort` to backend enum (v0.5.20 #2427)
+- **count_tokens**: count structured Anthropic blocks (v0.5.20 #2419)
+- **Headroom**: compress Kiro conversation state; proxy dashboard through app (v0.5.30 #2488, v0.5.20 #2372)
+- **MITM**: recover from stale lock file on server start (v0.5.20)
+- **RTK/find**: detect + group Windows backslash-style find output (v0.5.30 #2448)
+- **Cloudflare-AI**: support accountId in bulk key import (v0.5.30 #2449)
+- **Antigravity**: align provider fingerprint with IDE Desktop 2.1.1 (v0.5.30 #2389)
+- **Dashboard**: cut duplicate API/icon spam, lazy-load provider assets (v0.5.40)
+
+## Improvements — upstream sync
+- **i18n(zh-CN)**: complete Chinese translations for all UI strings (v0.5.30 #2436)
+- **API**: caching for tunnel + version status endpoints (v0.5.30)
+- **Perf**: skip inactive background services on startup; faster dev startup + lighter bundle (v0.5.35, v0.5.30)
+- **CLI**: allow staged app bundle builds (v0.5.30 #2479)
+- **Pricing**: updated Claude/Codex model rates + new models (v0.5.30)
+
+## Fork carry-forward
+- **Usage**: Members dashboard tab, per-member effectiveness, TPS (mean/p50/p95/throughput), CSV hardening (IVT-0819)
+- **Build**: vinext CLI pipeline, dropped Next.js dependency (IVT-0517)
+- **Process**: pm2 `ecosystem.config.cjs` + `start:pm2` script (IVT-0517)
+
 # v0.8.0 (2026-07-15)
 
 ## Features
