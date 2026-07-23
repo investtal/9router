@@ -15,6 +15,7 @@ import {
 } from "@/lib/tunnel";
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
+import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
 import { registerCleanup, shutdown, isShutdownInProgress } from "@/lib/shutdownCoordinator";
 import { initCrashLogger } from "@/lib/crashLogger.js";
 
@@ -58,35 +59,8 @@ export async function initializeApp() {
     // (OOM, child-process crashes on Ubuntu, etc.) are never invisible.
     initCrashLogger();
 
-    await cleanupProviderConnections();
-    const settings = await getSettings();
-
-    // Phase 5: Linux-specific warning for file descriptor limits (common cause of silent death)
-    if (process.platform === "linux") {
-      try {
-        const { execSync } = await import("child_process");
-        const ulimitOutput = execSync("ulimit -n 2>/dev/null || echo 1024", { encoding: "utf8" }).trim();
-        const currentLimit = parseInt(ulimitOutput, 10) || 1024;
-        if (currentLimit < 4096) {
-          console.warn(`[InitApp] WARNING: Low file descriptor limit (${currentLimit}). Long-running proxy usage on Linux may hit EMFILE. Consider increasing with "ulimit -n 65536" or systemd LimitNOFILE.`);
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // Auto-resume tunnel (once per process)
-    if (settings.tunnelEnabled && !g.tunnelAutoResumed) {
-      g.tunnelAutoResumed = true;
-      console.log("[InitApp] Tunnel was enabled, auto-resuming...");
-      safeRestartTunnel("startup").catch((e) => console.log("[InitApp] Tunnel resume failed:", e.message));
-    }
-
-    // Auto-resume tailscale (once per process)
-    if (settings.tailscaleEnabled && !g.tailscaleAutoResumed) {
-      g.tailscaleAutoResumed = true;
-      console.log("[InitApp] Tailscale was enabled, auto-resuming...");
-      safeRestartTailscale("startup").catch((e) => console.log("[InitApp] Tailscale resume failed:", e.message));
-    }
-
+    // Register cleanup + exit-respawn callback immediately so signals and
+    // unexpected cloudflared exits are handled even during the deferred window.
     if (!g.signalHandlersRegistered) {
       // Phase 5: Register core privileged cleanup with the coordinator
       registerCleanup("dns-and-cloudflared", () => {
@@ -123,10 +97,10 @@ export async function initializeApp() {
       pruneOldUsageHistory(90).catch(() => {});
     }).catch(() => {});
 
-    startWatchdog();
-    startNetworkMonitor();
-    autoStartMitm();
-    startQuotaAutoPing();
+    // Defer the heavy work — nothing here blocks incoming requests.
+    setTimeout(() => {
+      runHeavyStartup().catch((e) => console.error("[InitApp] deferred startup failed:", e.message));
+    }, STARTUP_DEFER_MS);
   } catch (error) {
     console.error("[InitApp] Error:", error);
   }
@@ -136,23 +110,35 @@ async function runHeavyStartup() {
   await cleanupProviderConnections();
   const settings = await getSettings();
 
+  // Phase 5: Linux-specific warning for file descriptor limits (common cause of silent death)
+  if (process.platform === "linux") {
+    try {
+      const { execSync } = await import("child_process");
+      const ulimitOutput = execSync("ulimit -n 2>/dev/null || echo 1024", { encoding: "utf8" }).trim();
+      const currentLimit = parseInt(ulimitOutput, 10) || 1024;
+      if (currentLimit < 4096) {
+        console.warn(`[InitApp] WARNING: Low file descriptor limit (${currentLimit}). Long-running proxy usage on Linux may hit EMFILE. Consider increasing with "ulimit -n 65536" or systemd LimitNOFILE.`);
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // Auto-resume tunnel (once per process)
-  if (settings.tunnelEnabled && !g.tunnelAutoResumed) {
+  if (settings?.tunnelEnabled && !g.tunnelAutoResumed) {
     g.tunnelAutoResumed = true;
     console.log("[InitApp] Tunnel was enabled, auto-resuming...");
     safeRestartTunnel("startup").catch((e) => console.log("[InitApp] Tunnel resume failed:", e.message));
   }
 
   // Auto-resume tailscale (once per process)
-  if (settings.tailscaleEnabled && !g.tailscaleAutoResumed) {
+  if (settings?.tailscaleEnabled && !g.tailscaleAutoResumed) {
     g.tailscaleAutoResumed = true;
     console.log("[InitApp] Tailscale was enabled, auto-resuming...");
     safeRestartTailscale("startup").catch((e) => console.log("[InitApp] Tailscale resume failed:", e.message));
   }
 
-  if (settings.tunnelEnabled) ensureCloudflared().catch(() => {});
+  if (settings?.tunnelEnabled) ensureCloudflared().catch(() => {});
 
-  if (settings.mitmEnabled) {
+  if (settings?.mitmEnabled) {
     // Sync mitmAlias DB → JSON cache so standalone MITM server can read it.
     syncMitmAliasCache().catch(() => {});
     autoStartMitm(settings);
@@ -176,7 +162,7 @@ async function autoStartMitm(settings) {
   if (g.mitmStartInProgress) return;
   g.mitmStartInProgress = true;
   try {
-    if (!settings.mitmEnabled) return;
+    if (!settings?.mitmEnabled) return;
     const mitmStatus = await getMitmStatus();
     if (mitmStatus.running) return;
 

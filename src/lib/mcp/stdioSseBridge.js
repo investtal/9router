@@ -180,4 +180,4 @@ function isRunning(name) {
   return !!(entry?.proc && !entry.proc.killed && entry.proc.exitCode === null);
 }
 
-export { getOrSpawn, registerSession, unregisterSession, sendToChild, isRunning, findPlugin };
+export { getOrSpawn, registerSession, unregisterSession, sendToChild, isRunning, findPlugin, killAllBridges };
