@@ -43,7 +43,7 @@ export async function handleStt(request) {
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
-  log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
+  log.debug("ROUTING", `Provider: ${provider}, Model: ${model}`);
 
   // noAuth providers
   if (!CREDENTIALED_PROVIDERS.has(provider)) {

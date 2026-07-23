@@ -234,7 +234,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
   } else {
-    log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
+    log.debug("ROUTING", `Provider: ${provider}, Model: ${model}`);
   }
 
   // Extract userAgent from request
