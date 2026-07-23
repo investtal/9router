@@ -9,7 +9,7 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
+.investtal/logs/
 # testing
 /coverage
 
@@ -68,6 +68,8 @@ package-lock.json
 README1.md
 deploy*.sh
 ecosystem.config.*
+# Track our project pm2 process file (the *.config.* rule above would exclude it).
+!ecosystem.config.cjs
 
 scripts/agSniffer/*
 gitbooks/*
@@ -77,12 +79,10 @@ gitbook/README.md
 open-sse.old/
 .graphifyignore
 graphify-out/*
-
-# Local-only working dirs (notes, vendored repos, scripts, skills)
-.claude/
-.docs/
-.repo/
-.script/
-.codegraph/
-.PR/
-.next-analyze/*
+~/.9router
+log.txt
+backup.json
+.serena
+/dist/
+.vinext/
+.worktrees

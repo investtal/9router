@@ -1,5 +1,14 @@
 # open-sse
 
+## Code comments (always)
+
+Default: **zero narrative comments**. Code names WHAT.
+- **Ban**: restating code, step narration (`// Step 1`), section banners, changelog/attribution, empty TODOs, dead commented-out code, restating JSDoc (`@param x The x`).
+- **Keep**: WHY (business/workaround), non-obvious invariants, security/compliance, public API contracts, deliberate shortcuts (`// simplify:`).
+- **Gate**: before PR run `deslop` skill. Mechanical check when `investtal-agent` is available:
+  `python3 <investtal-agent>/skills/deslop/scripts/deslop_comments.py --check --diff origin/main`
+  (`--fix` to strip classifiable noise). Prefer better names over comments. Soft prose alone is not deslop.
+
 Provider-agnostic SSE engine: one OpenAI-style request → any provider (LLM chat, image, embedding, tts, stt, search), streamed back in the client's format.
 
 ## Request lifecycle (chat)

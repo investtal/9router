@@ -1,5 +1,6 @@
 import "open-sse/index.js";
 
+import { checkApiKeyDailyCost } from "../../lib/billing/apiKeyCostGuard.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -22,6 +23,35 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { getApiKeys } from "@/lib/db/repos/apiKeysRepo.js";
+
+// Log threshold for "approaching limit" early signal (fraction of limit).
+const RATE_LIMIT_NEAR_THRESHOLD = 0.8;
+
+// Look up the human-readable name for an API key value. Cheap scan; only called
+// on the rate-limit path, not every request.
+async function resolveApiKeyName(apiKeyValue) {
+  try {
+    const keys = await getApiKeys();
+    const found = keys.find((k) => k.key === apiKeyValue);
+    return found?.name || (apiKeyValue ? apiKeyValue.slice(0, 8) + "…" : "local");
+  } catch {
+    return apiKeyValue ? apiKeyValue.slice(0, 8) + "…" : "local";
+  }
+}
+
+// Capture daily-cost guard state for future limit tuning. Fires on block and
+// when usage crosses RATE_LIMIT_NEAR_THRESHOLD. One structured line per event
+// so pm2 logs stay grep-able: grep "RATE_LIMIT" ~/.pm2/logs/9router-out.log
+async function logDailyCostCheck({ apiKey, model, provider, blocked, limit, cost }) {
+  const ratio = limit > 0 ? cost / limit : 0;
+  if (!blocked && ratio < RATE_LIMIT_NEAR_THRESHOLD) return;
+
+  const keyName = await resolveApiKeyName(apiKey);
+  const tag = blocked ? "RATE_LIMIT" : "RATE_LIMIT_NEAR";
+  const pct = (ratio * 100).toFixed(1);
+  log.warn(tag, `model=${model} provider=${provider} key=${keyName} cost=$${cost.toFixed(4)} limit=$${limit} (${pct}%)`);
+}
 
 /**
  * Handle chat completion request
@@ -105,7 +135,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, settings);
         },
         log,
         comboName: modelStr,
@@ -119,7 +149,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, settings),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -128,24 +158,23 @@ export async function handleChat(request, clientRawRequest = null) {
   }
 
   // Single model request
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, settings);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, settings = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
-      const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
-      const comboStrategies = chatSettings.comboStrategies || {};
+      const comboStrategies = settings?.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-      const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      const comboStrategy = comboSpecificStrategy || settings?.comboStrategy || "fallback";
 
       if (comboStrategy === "fusion") {
         log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
@@ -158,7 +187,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, settings);
           },
           log,
           comboName: modelStr,
@@ -167,12 +196,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         });
       }
 
-      const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
+      const comboStickyLimit = settings?.comboStickyRoundRobinLimit;
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, settings),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -185,7 +214,28 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const { provider, model } = modelInfo;
 
-  // Routing shown in the unified "▶" line (client model → provider/model)
+  // Check per-key daily cost limit before using upstream accounts
+  if (apiKey) {
+    const costCheck = await checkApiKeyDailyCost({ apiKey, model, provider, settings });
+    if (costCheck.limit > 0) {
+      await logDailyCostCheck({ apiKey, model, provider, ...costCheck });
+    }
+    if (costCheck.blocked) {
+      return unavailableResponse(
+        HTTP_STATUS.RATE_LIMITED,
+        `Daily cost limit reached for ${model}`,
+        new Date(Date.now() + costCheck.retryAfterSeconds * 1000).toISOString(),
+        `reset after ${costCheck.retryAfterSeconds}s`
+      );
+    }
+  }
+
+  // Log model routing (alias → actual model)
+  if (modelStr !== `${provider}/${model}`) {
+    log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
+  } else {
+    log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
+  }
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
@@ -228,8 +278,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Use shared chatCore
-    const chatSettings = await getSettings();
-    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const providerThinking = (settings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -239,21 +288,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,
-      ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      headroomEnabled: !!chatSettings.headroomEnabled,
-      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
-      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
-      ponytailEnabled: !!chatSettings.ponytailEnabled,
-      ponytailLevel: chatSettings.ponytailLevel || "full",
-      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
-      pxpipeMinChars: chatSettings.pxpipeMinChars,
-      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-      // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
-      onPxpipeEvent: appendPxpipeEvent,
+      ccFilterNaming: !!settings.ccFilterNaming,
+      rtkEnabled: !!settings.rtkEnabled,
+      headroomEnabled: !!settings.headroomEnabled,
+      headroomUrl: settings.headroomUrl || DEFAULT_HEADROOM_URL,
+      headroomCompressUserMessages: !!settings.headroomCompressUserMessages,
+      cavemanEnabled: !!settings.cavemanEnabled,
+      cavemanLevel: settings.cavemanLevel || "full",
+      ponytailEnabled: !!settings.ponytailEnabled,
+      ponytailLevel: settings.ponytailLevel || "full",
       providerThinking,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
