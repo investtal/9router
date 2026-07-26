@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { UsageStats, RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
 import RequestDetailsTab from "./components/RequestDetailsTab";
 import MembersTab from "./components/MembersTab";
+import ToolsTab from "./components/ToolsTab";
 
 const PERIODS = [
   { value: "today", label: "Today" },
@@ -29,7 +30,7 @@ function UsageContent() {
   const [period, setPeriod] = useState("today");
 
   const tabFromUrl = searchParams.get("tab");
-  const activeTab = tabFromUrl && ["overview", "members", "details"].includes(tabFromUrl)
+  const activeTab = tabFromUrl && ["overview", "members", "tools", "details"].includes(tabFromUrl)
     ? tabFromUrl
     : "overview";
 
@@ -40,6 +41,8 @@ function UsageContent() {
     router.push(`/dashboard/usage?${params.toString()}`, { scroll: false });
   };
 
+  const showPeriod = activeTab === "overview" || activeTab === "members" || activeTab === "tools";
+
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       {/* Tabs + period selector on same row */}
@@ -48,13 +51,14 @@ function UsageContent() {
           options={[
             { value: "overview", label: "Overview" },
             { value: "members", label: "Members" },
+            { value: "tools", label: "Tools" },
             { value: "details", label: "Details" },
           ]}
           value={activeTab}
           onChange={handleTabChange}
           className="w-full sm:w-auto"
         />
-        {(activeTab === "overview" || activeTab === "members") && (
+        {showPeriod && (
           <SegmentedControl
             options={PERIODS}
             value={period}
@@ -73,6 +77,11 @@ function UsageContent() {
       {activeTab === "members" && (
         <Suspense fallback={<CardSkeleton />}>
           <MembersTab period={period} />
+        </Suspense>
+      )}
+      {activeTab === "tools" && (
+        <Suspense fallback={<CardSkeleton />}>
+          <ToolsTab period={period} />
         </Suspense>
       )}
       {activeTab === "logs" && <RequestLogger />}
