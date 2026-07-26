@@ -3,10 +3,6 @@ import { getToolAggregateStats } from "@/lib/usageDb";
 
 const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
 
-/**
- * GET /api/usage/tools?period=7d&provider=claude
- * Aggregate tool call / payload stats from observability request details.
- */
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);

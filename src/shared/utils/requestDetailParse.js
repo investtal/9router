@@ -101,10 +101,6 @@ export function extractDeclaredTools(request) {
   });
 }
 
-/**
- * Walk request + response for tool_use / tool_result / tool_calls.
- * Returns per-tool call rows + aggregate counts.
- */
 export function extractToolActivity(request, response) {
   const calls = []; // { name, phase: 'call'|'result', id, chars, preview }
   const countByName = {};
@@ -241,11 +237,6 @@ export function extractToolActivityForAggregate(request, response) {
   return extractToolActivity(req, response);
 }
 
-/**
- * Aggregate tool activity across many request-detail records.
- * @param {object[]} details
- * @returns {{ tools: object[], scanned: number, withActivity: number }}
- */
 export function aggregateToolStats(details) {
   const byName = {};
   let withActivity = 0;

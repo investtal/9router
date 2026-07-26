@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRequestDetailById } from "@/lib/usageDb";
 
-/**
- * GET /api/usage/request-details/:id
- * Full observability payload for one request (system / messages / tools / response).
- */
 export async function GET(_request, { params }) {
   try {
     const { id } = await params;

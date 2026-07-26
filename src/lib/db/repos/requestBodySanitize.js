@@ -1,8 +1,3 @@
-/**
- * Prepare request/response payloads for observability storage.
- * Keeps structure (system / messages / tools) readable while bounding disk size
- * and redacting common secret-bearing keys/patterns.
- */
 
 const BASE64_RE = /^(?:data:[^;]+;base64,)?[A-Za-z0-9+/=\s]{500,}$/;
 const SECRET_KEY_RE = /^(authorization|proxy-authorization|x-api-key|api[_-]?key|x-goog-api-key|x-auth-token|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|secret|password|passwd|private[_-]?key|client[_-]?secret|bearer)$/i;
