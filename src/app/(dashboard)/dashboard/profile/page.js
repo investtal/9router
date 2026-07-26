@@ -706,13 +706,6 @@ export default function ProfilePage() {
                     />
                   </div>
                 )}
-                {/* {!settings.hasPassword && (
-                  <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                    <p className="text-sm text-blue-600 dark:text-blue-400">
-                      Setting password for the first time. Leave current password empty or use default: <code className="bg-blue-500/20 px-1 rounded">123456</code>
-                    </p>
-                  </div>
-                )} */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-2">
                     <label className="text-xs sm:text-sm font-medium">New Password</label>
@@ -1090,7 +1083,7 @@ export default function ProfilePage() {
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm sm:text-base">Enable Observability</p>
               <p className="text-xs sm:text-sm text-text-muted">
-                Record request details for inspection in the logs view
+                Record full request bodies (system / messages / tools) for Recent Requests click-through and the Usage → Details tab. Default stores up to ~2MB per field; media is redacted.
               </p>
             </div>
             <Toggle

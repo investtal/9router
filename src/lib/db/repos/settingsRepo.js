@@ -29,7 +29,8 @@ const DEFAULT_SETTINGS = {
   observabilityMaxRecords: 1000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
-  observabilityMaxJsonSize: 5,
+  // KB per stored JSON field (request / providerRequest / response). 2048 ≈ 2MB.
+  observabilityMaxJsonSize: 2048,
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
@@ -43,10 +44,14 @@ const DEFAULT_SETTINGS = {
   cavemanLevel: "full",
   ponytailEnabled: false,
   ponytailLevel: "full",
-  pxpipeEnabled: false,
-  pxpipeAutoInstall: true,
-  pxpipeMinChars: 25000,
-  pxpipeTimeoutMs: 15000,
+  apiKeyDailyCostLimits: (() => {
+    try {
+      const raw = process.env.API_KEY_DAILY_COST_LIMITS;
+      return raw ? JSON.parse(raw) : { "claude-opus-4-8": 200 };
+    } catch {
+      return { "claude-opus-4-8": 200 };
+    }
+  })(),
 };
 
 async function readRaw() {
@@ -55,7 +60,6 @@ async function readRaw() {
   return row ? parseJson(row.data, {}) : {};
 }
 
-// Merge raw settings with defaults; backward-compat for missing keys
 function mergeWithDefaults(raw) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
   for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS)) {
@@ -92,6 +96,21 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
+  // Observability config is memoized in requestDetailsRepo — bust on toggle / size changes.
+  if (
+    updates &&
+    ("enableObservability" in updates ||
+      "enableObservability2" in updates ||
+      "observabilityMaxRecords" in updates ||
+      "observabilityMaxJsonSize" in updates ||
+      "observabilityBatchSize" in updates ||
+      "observabilityFlushIntervalMs" in updates)
+  ) {
+    try {
+      const { clearObservabilityConfigCache } = await import("./requestDetailsRepo.js");
+      clearObservabilityConfigCache();
+    } catch { /* optional during early boot */ }
+  }
   return mergeWithDefaults(next);
 }
 

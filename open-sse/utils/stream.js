@@ -181,10 +181,15 @@ export function createSSEStream(options = {}) {
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               }
-            } catch {
-              // Skip non-JSON data lines silently — don't forward garbage to clients.
-              // Upstream providers sometimes return plain-text errors (HTML, rate-limit
-              // messages) in the SSE stream that would break downstream JSON decoders.
+            } catch (parseErr) {
+              // Non-JSON data line from upstream (HTML error, rate-limit text, or a
+              // chunk split across TCP segments). Dropping it can truncate the client's
+              // tool-arg JSON reassembly → downstream "API Error, JSON parse error:
+              // Unexpected EOF". Log snippet + counters so occurrences are traceable.
+              const snippet = trimmed.length > 120 ? trimmed.slice(0, 120) + `…(${trimmed.length}B)` : trimmed;
+              console.warn(
+                `[STREAM PASSTHROUGH SKIP] provider=${provider || targetFormat} model=${model} src=${sourceFormat} dst=${targetFormat} conn=${connectionId || "n/a"} line=${sseLineCount} emitted=${sseEmittedCount} snippet="${snippet}" :: ${parseErr?.message || parseErr}`
+              );
               continue;
             }
           }
@@ -458,7 +463,14 @@ export function createSSEStream(options = {}) {
           }, state?.usage, ttftAt);
         }
       } catch (error) {
-        console.log("Error in flush:", error);
+        // Flush emits the terminal SSE event (message_stop / [DONE]). If it throws,
+        // NO terminal event reaches the client → downstream parser hits
+        // "API Error, JSON parse error: Unexpected EOF". Capture full context so the
+        // next occurrence is traceable to provider/model/format/last-state.
+        console.error(
+          `[STREAM FLUSH ERROR] provider=${provider || targetFormat} model=${model} mode=${mode} src=${sourceFormat} dst=${targetFormat} conn=${connectionId || "n/a"} lines=${sseLineCount} emitted=${sseEmittedCount} contentLen=${totalContentLength} trailingBuf=${buffer.length}B usage=${JSON.stringify(state?.usage || null)} :: ${error?.name || "Error"}: ${error?.message || error}`
+        );
+        if (error?.stack && process.env.NODE_ENV !== "production") console.error(error.stack);
       }
     }
   });

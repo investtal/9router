@@ -3,10 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
-import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import RequestDetailModal from "@/shared/components/RequestDetailModal";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -49,37 +49,6 @@ function getProviderName(providerId, cache) {
 
   const providerConfig = getProviderByAlias(providerId) || AI_PROVIDERS[providerId];
   return providerConfig?.name || providerId;
-}
-
-function CollapsibleSection({ title, children, defaultOpen = false, icon = null }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
-  
-  return (
-    <div className="border border-black/5 dark:border-white/5 rounded-lg overflow-hidden">
-      <button 
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-3 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          {icon && <span className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
-          <span className="font-semibold text-sm text-text-main">{title}</span>
-        </div>
-        <span className={cn(
-          "material-symbols-outlined text-[20px] text-text-muted transition-transform duration-200",
-          isOpen ? "rotate-90" : ""
-        )}>
-          chevron_right
-        </span>
-      </button>
-      
-      {isOpen && (
-        <div className="p-4 border-t border-black/5 dark:border-white/5">
-          {children}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function getCachedTokens(tokens) {
@@ -162,7 +131,21 @@ export default function RequestDetailsTab() {
     fetchDetails();
   }, [fetchDetails]);
 
-  const handleViewDetail = (detail) => {
+  const handleViewDetail = async (detail) => {
+    // List is metadata-only; load full body by id when present.
+    if (detail?.id && detail._bodyOmitted) {
+      try {
+        const res = await fetch(`/api/usage/request-details/${encodeURIComponent(detail.id)}`);
+        const data = await res.json();
+        if (res.ok && data.detail) {
+          setSelectedDetail(data.detail);
+          setIsDrawerOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.error("Failed to load full request detail:", e);
+      }
+    }
     setSelectedDetail(detail);
     setIsDrawerOpen(true);
   };
@@ -343,168 +326,14 @@ export default function RequestDetailsTab() {
         )}
       </Card>
 
-      <Drawer
-        isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
-        title="Request Details"
-        width="lg"
-      >
-        {selectedDetail && (
-          <div className="space-y-6">
-            <div className="grid min-w-0 grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-              <div>
-                <span className="text-text-muted">ID:</span>{" "}
-                <span className="break-all font-mono text-text-main">{selectedDetail.id}</span>
-              </div>
-              <div>
-                <span className="text-text-muted">Timestamp:</span>{" "}
-                <span className="text-text-main">{new Date(selectedDetail.timestamp).toLocaleString()}</span>
-              </div>
-              <div>
-                 <span className="text-text-muted">Provider:</span>{" "}
-                 <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
-               </div>
-              <div>
-                <span className="text-text-muted">Model:</span>{" "}
-                <span className="text-text-main font-mono">{selectedDetail.model}</span>
-              </div>
-              <div>
-                <span className="text-text-muted">Status:</span>{" "}
-                <span className={cn(
-                  "font-medium",
-                  selectedDetail.status === "success" ? "text-green-600" : "text-red-600"
-                )}>
-                  {selectedDetail.status}
-                </span>
-              </div>
-              <div>
-                <span className="text-text-muted">Latency:</span>{" "}
-                <span className="text-text-main font-mono">
-                  TTFT {selectedDetail.latency?.ttft || 0}ms / Total {selectedDetail.latency?.total || 0}ms
-                </span>
-              </div>
-              <div>
-                <span className="text-text-muted">Input Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
-                  {getInputTokens(selectedDetail.tokens).toLocaleString()}
-                </span>
-              </div>
-              {getCachedTokens(selectedDetail.tokens) > 0 && (
-                <div>
-                  <span className="text-text-muted">Cached Tokens:</span>{" "}
-                  <span className="text-text-main font-mono">
-                    {getCachedTokens(selectedDetail.tokens).toLocaleString()}
-                  </span>
-                </div>
-              )}
-              {getCacheCreationTokens(selectedDetail.tokens) > 0 && (
-                <div>
-                  <span className="text-text-muted">Cache Creation:</span>{" "}
-                  <span className="text-text-main font-mono">
-                    {getCacheCreationTokens(selectedDetail.tokens).toLocaleString()}
-                  </span>
-                </div>
-              )}
-              <div>
-                <span className="text-text-muted">Output Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
-                  {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
-                </span>
-              </div>
-            </div>
-
-            {selectedDetail.pxpipe && (
-              <div className="rounded-lg border border-black/5 dark:border-white/5 p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-[18px] text-text-muted">image</span>
-                  <span className="font-semibold text-sm text-text-main">PXPIPE</span>
-                  <span className={cn(
-                    "text-xs px-2 py-0.5 rounded",
-                    selectedDetail.pxpipe.applied
-                      ? "bg-green-500/15 text-green-600"
-                      : "bg-amber-500/15 text-amber-600"
-                  )}>
-                    {selectedDetail.pxpipe.applied ? "Activated" : "Skipped"}
-                  </span>
-                </div>
-                {selectedDetail.pxpipe.applied ? (
-                  <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                    <div>
-                      <span className="text-text-muted block text-xs">Original (est.)</span>
-                      <span className="font-mono">{(selectedDetail.pxpipe.tokensBeforeEst || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Compressed (est.)</span>
-                      <span className="font-mono">{(selectedDetail.pxpipe.tokensAfterEst || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Saved</span>
-                      <span className="font-mono text-green-600">{selectedDetail.pxpipe.savedPct || 0}%</span>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block text-xs">Images</span>
-                      <span className="font-mono">{selectedDetail.pxpipe.imageCount || 0} ({selectedDetail.pxpipe.durationMs || 0}ms)</span>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-text-muted">
-                    Reason: <span className="font-mono">{selectedDetail.pxpipe.reason}</span>
-                    {selectedDetail.pxpipe.detail ? ` — ${selectedDetail.pxpipe.detail}` : ""}
-                  </p>
-                )}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <CollapsibleSection title="1. Client Request (Input)" defaultOpen={true} icon="input">
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {JSON.stringify(selectedDetail.request, null, 2)}
-                </pre>
-              </CollapsibleSection>
-
-              {selectedDetail.providerRequest && (
-                <CollapsibleSection title="2. Provider Request (Translated)" icon="translate">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {JSON.stringify(selectedDetail.providerRequest, null, 2)}
-                  </pre>
-                </CollapsibleSection>
-              )}
-
-              {selectedDetail.providerResponse && (
-                <CollapsibleSection title="3. Provider Response (Raw)" icon="data_object">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {typeof selectedDetail.providerResponse === 'object'
-                      ? JSON.stringify(selectedDetail.providerResponse, null, 2)
-                      : selectedDetail.providerResponse
-                    }
-                  </pre>
-                </CollapsibleSection>
-              )}
-              
-              <CollapsibleSection title="4. Client Response (Final)" defaultOpen={true} icon="output">
-                {selectedDetail.response?.thinking && (
-                  <div className="mb-4">
-                    <h4 className="font-semibold text-text-main mb-2 flex items-center gap-2 text-xs uppercase tracking-wide opacity-70">
-                      <span className="material-symbols-outlined text-[16px]">psychology</span>
-                      Thinking Process
-                    </h4>
-                    <pre className="max-h-[200px] max-w-full overflow-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100 sm:p-4">
-                      {selectedDetail.response.thinking}
-                    </pre>
-                  </div>
-                )}
-                
-                <h4 className="font-semibold text-text-main mb-2 text-xs uppercase tracking-wide opacity-70">
-                  Content
-                </h4>
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {selectedDetail.response?.content || "[No content]"}
-                </pre>
-              </CollapsibleSection>
-            </div>
-          </div>
-        )}
-      </Drawer>
+      <RequestDetailModal
+        isOpen={isDrawerOpen && Boolean(selectedDetail)}
+        onClose={() => {
+          setIsDrawerOpen(false);
+          setSelectedDetail(null);
+        }}
+        detail={selectedDetail}
+      />
     </div>
   );
 }

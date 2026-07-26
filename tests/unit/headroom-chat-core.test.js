@@ -200,11 +200,11 @@ describe("handleChatCore Headroom diagnostics", () => {
       }),
     }));
     expect(JSON.stringify(executeMock.mock.calls[0][0].body)).not.toContain(original);
-    expect(log.info).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("reported token delta=90 before=100 after=10"));
-    expect(log.info).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("body="));
-    expect(log.info).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("messages="));
+    expect(log.debug).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("reported token delta=90 before=100 after=10"));
+    expect(log.debug).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("body="));
+    expect(log.debug).toHaveBeenCalledWith("HEADROOM", expect.stringContaining("messages="));
 
-    const logs = JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls]);
+    const logs = JSON.stringify([...log.debug.mock.calls, ...log.warn.mock.calls]);
     expect(logs).not.toContain("saved");
     expect(logs).not.toContain(original);
   });

@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
@@ -10,15 +11,36 @@ const OPTIONAL_PARAMS = [
   "seed", "stop", "tools", "tool_choice",
   "response_format", "prediction", "store", "metadata",
   "n", "logprobs", "top_logprobs", "logit_bias",
-  "user", "parallel_tool_calls"
+  "user", "parallel_tool_calls",
+  // Prompt / harness surfaces across formats
+  "system", "instructions", "input", "contents",
+  "system_instruction", "systemInstruction",
+  "context", "context_management", "cache_control",
 ];
 
 export function extractRequestConfig(body, stream) {
-  const config = { messages: body.messages || [], model: body.model, stream };
+  if (!body || typeof body !== "object") {
+    return { messages: [], model: undefined, stream };
+  }
+  const config = {
+    messages: body.messages || undefined,
+    model: body.model,
+    stream,
+  };
   for (const param of OPTIONAL_PARAMS) {
     if (body[param] !== undefined) config[param] = body[param];
   }
+  // Keep empty arrays out so UI doesn't hide system-only Claude payloads
+  if (!config.messages) delete config.messages;
   return config;
+}
+
+/** Stable id shared between requestDetails + usageHistory.meta.detailId */
+export function createRequestDetailId(model) {
+  const ts = Date.now();
+  const rand = randomUUID().replace(/-/g, "").slice(0, 12);
+  const modelPart = model ? String(model).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 48) : "unknown";
+  return `${ts}-${rand}-${modelPart}`;
 }
 
 export function extractUsageFromResponse(responseBody) {
@@ -75,25 +97,7 @@ export function buildRequestDetail(base, overrides = {}) {
   };
 }
 
-// Build the "done" summary: duration, ttft, in/out tokens with cache breakdown
-export function formatDoneLine({ usage, latency }) {
-  const u = usage || {};
-  const inTok = u.prompt_tokens ?? u.input_tokens ?? 0;
-  const outTok = u.completion_tokens ?? u.output_tokens ?? 0;
-  const cacheRead = u.cache_read_input_tokens ?? u.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
-  const cacheCreate = u.cache_creation_input_tokens ?? 0;
-  let inStr = `IN ${inTok}`;
-  if (cacheRead || cacheCreate) {
-    const parts = [];
-    if (cacheRead) parts.push(`↻${cacheRead}`);
-    if (cacheCreate) parts.push(`+${cacheCreate}`);
-    inStr += ` (CACHE ${parts.join(" ")})`;
-  }
-  const ttftStr = latency?.ttft ? ` · TTFT ${latency.ttft}ms` : "";
-  return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
-}
-
-export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, label = "USAGE", silent = false }) {
+export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, latency, detailId, label = "USAGE", silent = false }) {
   if (!tokens || typeof tokens !== "object") return;
 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
@@ -121,6 +125,9 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     timestamp: new Date().toISOString(),
     connectionId: connectionId || undefined,
     apiKey: apiKey || undefined,
-    endpoint: endpoint || null
+    endpoint: endpoint || null,
+    latencyTotalMs: latency?.total || 0,
+    latencyTtftMs: latency?.ttft || 0,
+    detailId: detailId || undefined,
   }).catch(() => {});
 }

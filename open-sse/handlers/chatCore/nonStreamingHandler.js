@@ -6,7 +6,7 @@ import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTrackin
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
-import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, createRequestDetailId } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 
@@ -92,7 +92,6 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
             function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args || {}) }
           });
         }
-        // Handle inline image data (from image generation models)
         const inlineData = part.inlineData || part.inline_data;
         if (inlineData?.data) {
           const mimeType = inlineData.mimeType || inlineData.mime_type || "image/png";
@@ -195,9 +194,6 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
   return responseBody;
 }
 
-/**
- * Handle non-streaming response from provider.
- */
 export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, trackDone, appendLog, pxpipe, reqTag, log }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
@@ -235,8 +231,14 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   const usage = extractUsageFromResponse(responseBody);
   appendLog({ tokens: usage, status: "200 OK" });
-  saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-  if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+  const totalLatency = Date.now() - requestStartTime;
+  const detailId = createRequestDetailId(model);
+  saveUsageStats({
+    provider, model, tokens: usage, connectionId, apiKey,
+    endpoint: clientRawRequest?.endpoint,
+    latency: { ttft: 0, total: totalLatency },
+    detailId,
+  });
 
   const translatedResponse = needsTranslation(targetFormat, sourceFormat)
     ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat)
@@ -253,7 +255,6 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     }
   }
 
-  // Ensure OpenAI-required fields
   if (!isClaudeMessageResponse) {
     if (!translatedResponse.object) translatedResponse.object = "chat.completion";
     if (!translatedResponse.created) translatedResponse.created = Math.floor(Date.now() / 1000);
@@ -284,7 +285,6 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   reqLogger.logConvertedResponse(translatedResponse);
 
-  const totalLatency = Date.now() - requestStartTime;
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },
@@ -295,11 +295,12 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     response: {
       content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
-      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
+      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown",
+      tool_calls: translatedResponse?.choices?.[0]?.message?.tool_calls || null,
     },
     pxpipe,
     status: "success"
-  }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
+  }, { id: detailId, endpoint: clientRawRequest?.endpoint || null })).catch(err => {
     console.error("[RequestDetail] Failed to save:", err.message);
   });
 

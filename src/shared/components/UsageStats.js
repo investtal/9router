@@ -18,6 +18,8 @@ import dynamic from "next/dynamic";
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
+import RequestDetailModal from "@/shared/components/RequestDetailModal";
+import { cn } from "@/shared/utils/cn";
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -30,28 +32,31 @@ function timeAgo(timestamp) {
 // Auto-update time display every second without re-rendering parent
 function TimeAgo({ timestamp }) {
   const [, setTick] = useState(0);
-  
+
   useEffect(() => {
     const timer = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(timer);
   }, []);
-  
+
   return <>{timeAgo(timestamp)}</>;
 }
 
 function RecentRequests({ requests = [] }) {
+  const [selectedDetailId, setSelectedDetailId] = useState(null);
+
   return (
     <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
       {/* Header */}
-      <div className="px-1 py-2 border-b border-border shrink-0">
+      <div className="px-1 py-2 border-b border-border shrink-0 flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+        <span className="text-[10px] text-text-muted hidden sm:inline">Click a row for full prompt</span>
       </div>
 
       {!requests.length ? (
         <div className="flex-1 flex items-center justify-center text-text-muted text-sm">No requests yet.</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          <table className="w-full min-w-[300px] border-collapse text-xs">
+          <table id="streaming-request-table" className="w-full min-w-75 border-collapse text-xs">
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
@@ -63,8 +68,19 @@ function RecentRequests({ requests = [] }) {
             <tbody className="divide-y divide-border/50">
               {requests.map((r, i) => {
                 const ok = !r.status || r.status === "ok" || r.status === "success";
+                const clickable = Boolean(r.detailId);
                 return (
-                  <tr key={i} className="hover:bg-bg-subtle transition-colors">
+                  <tr
+                    key={r.detailId || `${r.timestamp}-${r.model}-${i}`}
+                    className={cn(
+                      "transition-colors",
+                      clickable ? "hover:bg-bg-subtle cursor-pointer" : "hover:bg-bg-subtle/50 opacity-90"
+                    )}
+                    onClick={() => {
+                      if (r.detailId) setSelectedDetailId(r.detailId);
+                    }}
+                    title={clickable ? "View full request input" : "No stored body (observability off or old row)"}
+                  >
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
@@ -82,6 +98,12 @@ function RecentRequests({ requests = [] }) {
           </table>
         </div>
       )}
+
+      <RequestDetailModal
+        isOpen={Boolean(selectedDetailId)}
+        onClose={() => setSelectedDetailId(null)}
+        detailId={selectedDetailId}
+      />
     </Card>
   );
 }
@@ -91,7 +113,6 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
     .map(([key, data]) => {
       const totalTokens = (data.promptTokens || 0) + (data.completionTokens || 0);
       const totalCost = data.cost || 0;
-      // ponytail: cost split is a token-share allocation of the (rate-accurate)
       // server total, not a per-rate recompute. cached is a subset of prompt, so
       // peel it out of the input share. Upgrade to a stored per-component cost
       // breakdown if exact cached-rate cost display is needed.
@@ -219,7 +240,6 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
 
-  // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
   useEffect(() => {
     Promise.all([
@@ -227,7 +247,6 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       fetch("/api/provider-nodes").then((r) => r.ok ? r.json() : null),
     ])
       .then(([d, nodesData]) => {
-        // Build node name lookup for custom providers
         const nodeNameMap = {};
         for (const node of (nodesData?.nodes || [])) {
           nodeNameMap[node.id] = node.name;
@@ -251,9 +270,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       .catch(() => {});
   }, []);
 
-  // Fetch filtered stats via REST when period changes
   useEffect(() => {
-    // First load: show full spinner; subsequent: show subtle fetching indicator
     if (isInitialLoad.current) {
       isInitialLoad.current = false;
       setLoading(true);
@@ -316,7 +333,6 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
-  // Compute active table data
   const activeTableConfig = useMemo(() => {
     if (!stats) return null;
     switch (tableView) {

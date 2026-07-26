@@ -193,24 +193,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Per-request opt-out: client can bypass all token savers via header
   const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
-  // RTK: compress tool_result content
+  // RTK: compress tool_result content (savings line is debug-only — set LOG_LEVEL=debug)
   const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
   const rtkLine = formatRtkLog(rtkStats);
-  if (rtkLine) console.log(rtkLine);
+  if (rtkLine) log?.debug?.("RTK", rtkLine.replace(/^\[RTK\]\s*/, ""));
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
+  // Success metrics → debug; real problems (phantom savings / skip) stay at warn.
   const headroomDiagnostics = {};
   const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
-    log?.info?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
+    log?.debug?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
     if (isHeadroomPhantomSavings(headroomStats, headroomDiagnostics)) {
       log?.warn?.("HEADROOM", `reported token delta, but outbound JSON shrank <5%; provider may bill near-original payload | ${formatHeadroomSizeLog(headroomDiagnostics)}`);
     }
   } else if (tokenSaverEnabled && headroomEnabled) log?.warn?.("HEADROOM", `skipped: ${headroomDiagnostics.reason || "compression unavailable"}${headroomDiagnostics.endpoint ? ` (${headroomDiagnostics.endpoint})` : ""}`);
 
-  // Token-saver flags accumulator for the single "⚙" log line below.
+  // Token-saver flags (Caveman / Ponytail / PXPIPE) — debug-only; savers still apply.
   const xf = [];
 
   // Caveman: inject terse-style system prompt
@@ -238,7 +239,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     try { onPxpipeEvent?.({ provider, model, ...pxpipeSummary }); } catch { /* stats must not break requests */ }
   }
 
-  if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
+  if (xf.length) log?.debug?.("TOKEN_SAVER", xf.join(" · "));
 
   const executor = getExecutor(provider);
   trackPendingRequest(model, provider, connectionId, true);

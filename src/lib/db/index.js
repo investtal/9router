@@ -59,15 +59,15 @@ export {
 export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
-  appendRequestLog, getRecentLogs,
+  appendRequestLog, getRecentLogs, getMemberStats, getMemberDetail,
 } from "./repos/usageRepo.js";
 
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  getToolAggregateStats, clearObservabilityConfigCache,
 } from "./repos/requestDetailsRepo.js";
 
-// Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();
   const { exportSettings } = await import("./repos/settingsRepo.js");
