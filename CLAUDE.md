@@ -1,43 +1,37 @@
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+# Code Intelligence — graphify
 
-This project is indexed by GitNexus as **9router** (19041 symbols, 29708 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+This project uses **graphify** for code intelligence. The knowledge graph lives in `graphify-out/graph.json` (5220 nodes, 10948 edges, 377 communities).
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+- **MUST check blast radius before editing symbols.** Before modifying a function, class, or method, run `graphify query "what calls <symbolName>"` and report affected communities to the user.
+- **MUST check `graphify query` before committing** to verify changes only touch expected communities.
+- When exploring unfamiliar code, run `graphify query "<concept>"` instead of grepping — returns node-grouped results ranked by relevance.
+- When you need full context on a symbol — callers, callees, which community it belongs to — run `graphify explain "<symbolName>"` or `graphify path "<A>" "<B>"` for shortest path between concepts.
+- After structural code changes, rebuild with `/graphify . --update` to refresh the graph incrementally.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+- NEVER edit a function, class, or method without first checking blast radius via `graphify query`.
+- NEVER ignore surprising-connection or god-node warnings the graph surfaces.
+- NEVER rename symbols with find-and-replace — run `graphify query "<symbol>"` first to see all references.
 
 ## Resources
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/9router/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/9router/clusters` | All functional areas |
-| `gitnexus://repo/9router/processes` | All execution flows |
-| `gitnexus://repo/9router/process/{name}` | Step-by-step execution trace |
+| `graphify-out/graph.json` | Raw graph data (GraphRAG-ready) |
+| `graphify-out/GRAPH_REPORT.md` | Audit report: god nodes, surprising connections, suggested questions |
+| `graphify-out/graph.html` | Interactive graph, open in browser |
 
 ## CLI
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+| Task | Command |
+|------|---------|
+| Understand architecture / "How does X work?" | `graphify query "how does X work"` (BFS) |
+| Blast radius / "What breaks if I change X?" | `graphify query "what calls X"` |
+| Trace a specific path | `graphify query "X" --dfs` |
+| Shortest path between two concepts | `graphify path "A" "B"` |
+| Plain-language explanation of a node | `graphify explain "SymbolName"` |
+| Incremental rebuild after code changes | `/graphify . --update` |
+| Full rebuild | `/graphify .` |
