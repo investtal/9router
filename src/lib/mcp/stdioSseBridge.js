@@ -118,7 +118,6 @@ function getOrSpawn(name) {
   entry = { proc, sessions: new Map(), buffer: "" };
   store.set(name, entry);
 
-  // Parse newline-delimited JSON-RPC from child stdout, broadcast to all sessions.
   proc.stdout.on("data", (chunk) => {
     entry.buffer += chunk.toString("utf8");
     let idx;

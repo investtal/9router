@@ -53,13 +53,10 @@ const g = global.__appSingleton ??= {
 
 export async function initializeApp() {
   try {
-    // Register global crash handlers as early as possible.
-    // Catches uncaughtException/unhandledRejection and writes a full report
     // (stack, memory, recent logs) to ~/.9router/crash.log so silent deaths
     // (OOM, child-process crashes on Ubuntu, etc.) are never invisible.
     initCrashLogger();
 
-    // Register cleanup + exit-respawn callback immediately so signals and
     // unexpected cloudflared exits are handled even during the deferred window.
     if (!g.signalHandlersRegistered) {
       // Phase 5: Register core privileged cleanup with the coordinator
@@ -206,7 +203,6 @@ async function safeRestartTunnel(reason) {
 
   const force = FORCE_RESTART_REASONS.test(reason);
 
-  // Process alive = trust cloudflared (self-reconnects via --retries 99, keeps same URL).
   // Killing a live process on network change drops the tunnel and rotates the quick-tunnel URL.
   if (isCloudflaredRunning()) return;
 
@@ -331,7 +327,6 @@ function startNetworkMonitor() {
       const onlineEdge = wasOffline; // offline → online transition
       if (!networkChanged && !wasSleep && !onlineEdge) return;
 
-      // Wait for DHCP/DNS to settle before probing
       await new Promise((r) => setTimeout(r, NETWORK_SETTLE_MS));
 
       const reason = onlineEdge ? "online"
