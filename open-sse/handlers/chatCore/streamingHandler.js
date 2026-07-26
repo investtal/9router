@@ -5,7 +5,7 @@ import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
-import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, saveUsageStats, createRequestDetailId } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 
@@ -40,9 +40,6 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
   return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey);
 }
 
-/**
- * Handle streaming response — pipe provider SSE through transform stream to client.
- */
 export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log }) {
   if (onRequestSuccess) {
     Promise.resolve()
@@ -56,7 +53,6 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
   // pull a short human-readable message from the <title>, sanitize it, and
-  // return a clean JSON error instead. The message is stripped of HTML tags
   // and clamped so untrusted upstream text never reaches the client verbatim
   // (the UI may render error.message as HTML).
   const upstreamContentType = (providerResponse.headers.get('content-type') || '').toLowerCase();
@@ -107,11 +103,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   };
 }
 
-/**
- * Build onStreamComplete callback for streaming usage tracking.
- */
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
-  const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  const streamDetailId = createRequestDetailId(model);
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
     const latency = {
@@ -135,7 +128,12 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
 
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency, label: "STREAM USAGE" });
+    saveUsageStats({
+      provider, model, tokens: usage, connectionId, apiKey,
+      endpoint: clientRawRequest?.endpoint, latency,
+      detailId: streamDetailId,
+      label: "STREAM USAGE",
+    });
   };
 
   return { onStreamComplete, streamDetailId };

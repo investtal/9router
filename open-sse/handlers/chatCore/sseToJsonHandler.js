@@ -3,7 +3,7 @@ import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, saveUsageStats, createRequestDetailId } from "./requestDetail.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
@@ -35,7 +35,6 @@ function pickAssistantMessageForChatCompletion(output) {
 }
 
 /**
- * Parse OpenAI-style SSE text into a single chat completion JSON.
  * Used when provider forces streaming but client wants non-streaming.
  */
 export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
@@ -105,7 +104,6 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
 }
 
 /**
- * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
 export async function handleForcedSSEToJson({ providerResponse, sourceFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog, reqTag, log }) {
@@ -131,24 +129,46 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
       const usage = jsonResponse.usage || {};
       appendLog({ tokens: usage, status: "200 OK" });
       const totalLatency = Date.now() - requestStartTime;
-      saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: 0, total: totalLatency } });
+      const detailId = createRequestDetailId(model);
+      saveUsageStats({
+        provider, model, tokens: usage, connectionId, apiKey,
+        endpoint: clientRawRequest?.endpoint,
+        latency: { ttft: 0, total: totalLatency },
+        detailId,
+      });
 
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
+
+      const funcCallItemsEarly = (jsonResponse.output || []).filter(item => item.type === "function_call");
+      const earlyToolCalls = funcCallItemsEarly.map((item, idx) => ({
+        id: item.call_id || `call_${item.name}_${Date.now()}_${idx}`,
+        type: "function",
+        function: {
+          name: item.name,
+          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {})
+        }
+      }));
 
       saveRequestDetail(buildRequestDetail({
         ...ctx,
         latency: { ttft: 0, total: totalLatency },
         tokens: { prompt_tokens: usage.input_tokens || 0, completion_tokens: usage.output_tokens || 0 },
-        response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
+        response: {
+          content: textContent,
+          thinking: null,
+          finish_reason: jsonResponse.status || "unknown",
+          tool_calls: earlyToolCalls.length ? earlyToolCalls : null,
+        },
         status: "success"
-      }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
+      }, { id: detailId, endpoint: clientRawRequest?.endpoint || null })).catch((err) => {
+        console.error("[RequestDetail] Failed to save Responses SSE→JSON detail:", err?.message || err);
+      });
 
       // Client is Responses API → return as-is
       if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
         return { success: true, response: new Response(JSON.stringify(jsonResponse), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
       }
 
-      // Build client-format response
       const inTokens = usage.input_tokens || 0;
       const outTokens = usage.output_tokens || 0;
       let finalResp;
@@ -213,7 +233,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
     const usage = parsed.usage || {};
     appendLog({ tokens: usage, status: "200 OK" });
     const totalLatency = Date.now() - requestStartTime;
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, latency: { ttft: 0, total: totalLatency } });
+    const detailId = createRequestDetailId(model);
+    saveUsageStats({
+      provider, model, tokens: usage, connectionId, apiKey,
+      endpoint: clientRawRequest?.endpoint,
+      latency: { ttft: 0, total: totalLatency },
+      detailId,
+    });
 
     saveRequestDetail(buildRequestDetail({
       ...ctx,
@@ -222,10 +248,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
       response: {
         content: parsed.choices?.[0]?.message?.content || null,
         thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
-        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
+        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown",
+        tool_calls: parsed.choices?.[0]?.message?.tool_calls || null,
       },
       status: "success"
-    }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
+    }, { id: detailId, endpoint: clientRawRequest?.endpoint || null })).catch((err) => {
+      console.error("[RequestDetail] Failed to save Chat SSE→JSON detail:", err?.message || err);
+    });
 
     // Strip reasoning_content only when content is non-empty.
     // When content is empty (e.g. thinking models that used all tokens for reasoning),
