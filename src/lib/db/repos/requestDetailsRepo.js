@@ -1,14 +1,23 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { sanitizeForStorage } from "./requestBodySanitize.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
-const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
+// KB unit in settings → bytes here. 2048 KB (~2MB) fits large agent prompts.
+const DEFAULT_MAX_JSON_SIZE_KB = 2048;
+const DEFAULT_MAX_JSON_SIZE = DEFAULT_MAX_JSON_SIZE_KB * 1024;
 const CONFIG_CACHE_TTL_MS = 5000;
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
+
+/** Test / settings-update hook — drop cached observability config. */
+export function clearObservabilityConfigCache() {
+  cachedConfig = null;
+  cachedConfigTs = 0;
+}
 
 async function getObservabilityConfig() {
   if (cachedConfig && (Date.now() - cachedConfigTs) < CONFIG_CACHE_TTL_MS) return cachedConfig;
@@ -16,15 +25,17 @@ async function getObservabilityConfig() {
     const { getSettings } = await import("./settingsRepo.js");
     const settings = await getSettings();
     const envEnabled = process.env.OBSERVABILITY_ENABLED !== "false";
-    const enabled = typeof settings.enableObservability2 === "boolean"
-      ? settings.enableObservability2
-      : envEnabled;
+    // Profile UI writes enableObservability; older tests used enableObservability2.
+    const enabledFlag = settings.enableObservability ?? settings.enableObservability2;
+    const enabled = typeof enabledFlag === "boolean" ? enabledFlag : envEnabled;
+    const maxJsonSizeKb = settings.observabilityMaxJsonSize
+      || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || String(DEFAULT_MAX_JSON_SIZE_KB), 10);
     cachedConfig = {
       enabled,
       maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-      maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+      maxJsonSize: Math.max(32, maxJsonSizeKb) * 1024,
     };
   } catch {
     cachedConfig = {
@@ -61,11 +72,7 @@ function generateDetailId(model) {
 }
 
 function truncateField(obj, maxSize) {
-  const str = JSON.stringify(obj || {});
-  if (str.length > maxSize) {
-    return { _truncated: true, _originalSize: str.length, _preview: str.substring(0, 200) };
-  }
-  return obj || {};
+  return sanitizeForStorage(obj, maxSize);
 }
 
 async function flushToDatabase() {
@@ -137,7 +144,6 @@ export async function saveRequestDetail(detail) {
   }
 
   // Trigger immediate flush if batch threshold reached.
-  // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
   if (writeBuffer.length >= config.batchSize) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
@@ -174,7 +180,25 @@ export async function getRequestDetails(filter = {}) {
     `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  // List returns metadata + token/latency only — full bodies via getRequestDetailById.
+  const includeBodies = filter.includeBodies === true;
+  const details = rows.map((r) => {
+    const full = parseJson(r.data, {});
+    if (includeBodies) return full;
+    if (!full || typeof full !== "object" || Object.keys(full).length === 0) return {};
+    return {
+      id: full.id,
+      timestamp: full.timestamp,
+      provider: full.provider,
+      model: full.model,
+      connectionId: full.connectionId,
+      status: full.status,
+      latency: full.latency || {},
+      tokens: full.tokens || {},
+      pxpipe: full.pxpipe,
+      _bodyOmitted: true,
+    };
+  });
 
   return {
     details,
@@ -192,6 +216,73 @@ export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
+}
+
+function periodToStartDate(period) {
+  const now = Date.now();
+  switch (period) {
+    case "today": {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.toISOString();
+    }
+    case "24h":
+      return new Date(now - 24 * 3600_000).toISOString();
+    case "7d":
+      return new Date(now - 7 * 24 * 3600_000).toISOString();
+    case "30d":
+      return new Date(now - 30 * 24 * 3600_000).toISOString();
+    case "60d":
+      return new Date(now - 60 * 24 * 3600_000).toISOString();
+    case "all":
+      return null;
+    default:
+      return new Date(now - 24 * 3600_000).toISOString();
+  }
+}
+
+/**
+ * Aggregate tool_use / tool_result stats from stored request details.
+ * Scans up to `limit` newest rows in the period (default = observability maxRecords).
+ */
+export async function getToolAggregateStats({ period = "24h", provider = null, limit = null } = {}) {
+  const db = await getAdapter();
+  const config = await getObservabilityConfig();
+  // Cap scan tightly: each row can hold multi-MB bodies after observability capture.
+  const defaultCap = Math.min(config.maxRecords || 200, 200);
+  const cap = Math.min(Math.max(limit || defaultCap, 1), 200);
+
+  const conds = [];
+  const params = [];
+  const startDate = periodToStartDate(period);
+  if (startDate) {
+    conds.push("timestamp >= ?");
+    params.push(startDate);
+  }
+  if (provider) {
+    conds.push("provider = ?");
+    params.push(provider);
+  }
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+
+  const rows = db.all(
+    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ?`,
+    [...params, cap]
+  );
+  const details = rows.map((r) => parseJson(r.data, {}));
+
+  // Dynamic import keeps parse util out of early boot paths that don't need it
+  const { aggregateToolStats } = await import("@/shared/utils/requestDetailParse.js");
+  const agg = aggregateToolStats(details);
+
+  return {
+    period,
+    provider: provider || null,
+    scanned: agg.scanned,
+    withActivity: agg.withActivity,
+    tools: agg.tools,
+    limit: cap,
+  };
 }
 
 const _shutdownHandler = async () => {

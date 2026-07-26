@@ -29,7 +29,8 @@ const DEFAULT_SETTINGS = {
   observabilityMaxRecords: 1000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
-  observabilityMaxJsonSize: 5,
+  // KB per stored JSON field (request / providerRequest / response). 2048 ≈ 2MB.
+  observabilityMaxJsonSize: 2048,
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
@@ -59,7 +60,6 @@ async function readRaw() {
   return row ? parseJson(row.data, {}) : {};
 }
 
-// Merge raw settings with defaults; backward-compat for missing keys
 function mergeWithDefaults(raw) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
   for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS)) {
@@ -96,6 +96,21 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
+  // Observability config is memoized in requestDetailsRepo — bust on toggle / size changes.
+  if (
+    updates &&
+    ("enableObservability" in updates ||
+      "enableObservability2" in updates ||
+      "observabilityMaxRecords" in updates ||
+      "observabilityMaxJsonSize" in updates ||
+      "observabilityBatchSize" in updates ||
+      "observabilityFlushIntervalMs" in updates)
+  ) {
+    try {
+      const { clearObservabilityConfigCache } = await import("./requestDetailsRepo.js");
+      clearObservabilityConfigCache();
+    } catch { /* optional during early boot */ }
+  }
   return mergeWithDefaults(next);
 }
 
