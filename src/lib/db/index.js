@@ -65,7 +65,7 @@ export {
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
-  getToolAggregateStats, clearObservabilityConfigCache,
+  getRequestDetailsForExport, getToolAggregateStats, clearObservabilityConfigCache,
 } from "./repos/requestDetailsRepo.js";
 
 export async function exportDb() {

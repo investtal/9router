@@ -245,6 +245,52 @@ function periodToStartDate(period) {
  * Aggregate tool_use / tool_result stats from stored request details.
  * Scans up to `limit` newest rows in the period (default = observability maxRecords).
  */
+/**
+ * Load full request-detail bodies for a period (today / 7d / 30d / 60d / all).
+ * Cap scan size — each row may hold multi-MB payloads.
+ */
+export async function getRequestDetailsForExport({
+  period = "7d",
+  provider = null,
+  limit = null,
+} = {}) {
+  const db = await getAdapter();
+  const config = await getObservabilityConfig();
+  const defaultCap = Math.min(config.maxRecords || 200, 200);
+  const cap = Math.min(Math.max(limit || defaultCap, 1), 500);
+
+  const conds = [];
+  const params = [];
+  const startDate = periodToStartDate(period);
+  if (startDate) {
+    conds.push("timestamp >= ?");
+    params.push(startDate);
+  }
+  if (provider) {
+    conds.push("provider = ?");
+    params.push(provider);
+  }
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+
+  const cntRow = db.get(`SELECT COUNT(*) as c FROM requestDetails ${where}`, params);
+  const total = cntRow ? cntRow.c : 0;
+
+  const rows = db.all(
+    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ?`,
+    [...params, cap]
+  );
+  const details = rows.map((r) => parseJson(r.data, {}));
+
+  return {
+    period,
+    provider: provider || null,
+    details,
+    scanned: details.length,
+    total,
+    limit: cap,
+  };
+}
+
 export async function getToolAggregateStats({ period = "24h", provider = null, limit = null } = {}) {
   const db = await getAdapter();
   const config = await getObservabilityConfig();
