@@ -241,14 +241,7 @@ function periodToStartDate(period) {
   }
 }
 
-/**
- * Aggregate tool_use / tool_result stats from stored request details.
- * Scans up to `limit` newest rows in the period (default = observability maxRecords).
- */
-/**
- * Load full request-detail bodies for a period (today / 7d / 30d / 60d / all).
- * Cap scan size — each row may hold multi-MB payloads.
- */
+// Cap scan size — each row may hold multi-MB payloads.
 export async function getRequestDetailsForExport({
   period = "7d",
   provider = null,
@@ -291,6 +284,7 @@ export async function getRequestDetailsForExport({
   };
 }
 
+/** Aggregate tool_use/tool_result stats from stored details (capped scan). */
 export async function getToolAggregateStats({ period = "24h", provider = null, limit = null } = {}) {
   const db = await getAdapter();
   const config = await getObservabilityConfig();

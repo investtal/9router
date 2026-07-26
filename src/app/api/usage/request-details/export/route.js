@@ -4,10 +4,6 @@ import { buildBulkRequestsToon } from "@/shared/utils/toonExport";
 
 const PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
 
-/**
- * GET /api/usage/request-details/export?period=today|7d|30d|60d&provider=&limit=&format=toon
- * Returns compact request details encoded as TOON (default) for agent consumption.
- */
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
