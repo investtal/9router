@@ -30,12 +30,12 @@ function timeAgo(timestamp) {
 // Auto-update time display every second without re-rendering parent
 function TimeAgo({ timestamp }) {
   const [, setTick] = useState(0);
-  
+
   useEffect(() => {
     const timer = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(timer);
   }, []);
-  
+
   return <>{timeAgo(timestamp)}</>;
 }
 
@@ -51,7 +51,7 @@ function RecentRequests({ requests = [] }) {
         <div className="flex-1 flex items-center justify-center text-text-muted text-sm">No requests yet.</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          <table className="w-full min-w-[300px] border-collapse text-xs">
+          <table id="streaming-request-table" className="w-full min-w-75 border-collapse text-xs">
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
