@@ -10,15 +10,25 @@ function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
 
+function safeJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function textFromContent(content) {
   if (content == null) return "";
   if (typeof content === "string") return content;
+  if (typeof content === "number" || typeof content === "boolean") return String(content);
   if (!Array.isArray(content)) {
-    try {
-      return JSON.stringify(content, null, 2);
-    } catch {
-      return String(content);
+    if (typeof content === "object") {
+      if (typeof content.text === "string") return content.text;
+      if (typeof content.content === "string") return content.content;
+      if (Array.isArray(content.parts)) return textFromContent(content.parts);
     }
+    return safeJson(content);
   }
   return content
     .map((part) => {
@@ -26,22 +36,36 @@ function textFromContent(content) {
       if (!part || typeof part !== "object") return "";
       if (typeof part.text === "string") return part.text;
       if (typeof part.content === "string") return part.content;
-      if (part.type === "input_text" && typeof part.text === "string") return part.text;
-      if (part.type === "output_text" && typeof part.text === "string") return part.text;
+      if (typeof part.thinking === "string") return `[thinking] ${part.thinking}`;
+      if (part.type === "thinking" || part.type === "redacted_thinking") {
+        const body = typeof part.thinking === "string" ? part.thinking : safeJson(part);
+        return `[thinking] ${body}`;
+      }
+      if (part.type === "input_text" || part.type === "output_text" || part.type === "text") {
+        return typeof part.text === "string" ? part.text : safeJson(part);
+      }
       if (part.type === "tool_use" || part.type === "function_call") {
-        return `[tool_use ${part.name || part.function?.name || "?"}] ${JSON.stringify(part.input || part.arguments || {})}`;
+        return `[tool_use ${part.name || part.function?.name || "?"}] ${safeJson(part.input || part.arguments || {})}`;
       }
       if (part.type === "tool_result") {
-        const body = typeof part.content === "string" ? part.content : JSON.stringify(part.content ?? "");
+        const body = typeof part.content === "string" ? part.content : safeJson(part.content ?? "");
         return `[tool_result ${part.tool_use_id || ""}] ${body}`;
       }
-      try {
-        return JSON.stringify(part);
-      } catch {
-        return "";
-      }
+      if (Array.isArray(part.parts)) return textFromContent(part.parts);
+      return safeJson(part);
     })
     .filter(Boolean)
+    .join("\n");
+}
+
+function toolCallsText(toolCalls) {
+  return asArray(toolCalls)
+    .map((tc) => {
+      const name = tc?.function?.name || tc?.name || "?";
+      const args = tc?.function?.arguments ?? tc?.arguments ?? tc?.input ?? {};
+      const id = tc?.id ? ` id=${tc.id}` : "";
+      return `[tool_call ${name}${id}] ${typeof args === "string" ? args : safeJson(args)}`;
+    })
     .join("\n");
 }
 
@@ -62,33 +86,98 @@ export function extractSystemPrompt(request) {
   return "";
 }
 
+function normalizeMessage(m, i) {
+  if (m == null) {
+    return { index: i, role: "unknown", content: "", preview: "", raw: m };
+  }
+  if (typeof m === "string") {
+    return { index: i, role: "input", content: m, preview: m.slice(0, 160), raw: m };
+  }
+  const role = m?.role || m?.type || "unknown";
+  const parts = [];
+  const body = textFromContent(m?.content ?? m?.parts ?? m?.text);
+  if (body) parts.push(body);
+  if (Array.isArray(m?.tool_calls) && m.tool_calls.length) {
+    parts.push(toolCallsText(m.tool_calls));
+  }
+  // OpenAI Responses / agent turns sometimes park payload on type-only items
+  if (!parts.length && (m?.type === "function_call" || m?.type === "tool_use")) {
+    parts.push(
+      `[tool_use ${m.name || m.function?.name || "?"}] ${safeJson(m.input || m.arguments || m)}`
+    );
+  }
+  if (!parts.length && (m?.type === "function_call_output" || m?.type === "tool_result")) {
+    parts.push(`[tool_result ${m.call_id || m.tool_use_id || ""}] ${textFromContent(m.output ?? m.content ?? m)}`);
+  }
+  if (!parts.length && m && typeof m === "object" && !m.role && !m.content && !m.parts) {
+    parts.push(safeJson(m));
+  }
+  const content = parts.filter(Boolean).join("\n\n");
+  const preview = content.replace(/\s+/g, " ").trim().slice(0, 160);
+  return { index: i, role, content, preview, raw: m };
+}
+
 export function extractMessages(request) {
   if (!request || typeof request !== "object") return [];
   if (Array.isArray(request.messages)) {
-    return request.messages.map((m, i) => ({
-      index: i,
-      role: m?.role || "unknown",
-      content: textFromContent(m?.content),
-      raw: m,
-    }));
+    return request.messages.map((m, i) => normalizeMessage(m, i));
   }
   if (Array.isArray(request.input)) {
-    return request.input.map((m, i) => ({
-      index: i,
-      role: m?.role || m?.type || "input",
-      content: textFromContent(m?.content ?? m),
-      raw: m,
-    }));
+    return request.input.map((m, i) => normalizeMessage(m, i));
   }
   if (Array.isArray(request.contents)) {
-    return request.contents.map((m, i) => ({
-      index: i,
-      role: m?.role || "content",
-      content: textFromContent(m?.parts || m?.content || m),
-      raw: m,
-    }));
+    return request.contents.map((m, i) =>
+      normalizeMessage(
+        {
+          role: m?.role || "content",
+          content: m?.parts || m?.content || m,
+        },
+        i
+      )
+    );
   }
   return [];
+}
+
+/**
+ * Compact, agent-friendly shape for a single stored request detail (no raw multi-MB dumps).
+ */
+export function buildExportableDetail(detail) {
+  if (!detail || typeof detail !== "object") return null;
+  const request = pickPayload(detail.request, detail.providerRequest);
+  const response = pickPayload(detail.response, detail.providerResponse);
+  const tokens = detail.tokens || {};
+  const system = extractSystemPrompt(request);
+  const messages = extractMessages(request).map(({ index, role, content }) => ({
+    index,
+    role,
+    content,
+    chars: content.length,
+  }));
+  const tools = extractDeclaredTools(request).map(({ name, description }) => ({
+    name,
+    description: description || undefined,
+  }));
+  const { summary: toolActivity } = extractToolActivity(request, response);
+  return {
+    id: detail.id || null,
+    timestamp: detail.timestamp || null,
+    provider: detail.provider || null,
+    model: detail.model || null,
+    status: detail.status || null,
+    connectionId: detail.connectionId || null,
+    latency: detail.latency || null,
+    tokens: {
+      input: tokens.prompt_tokens || tokens.input_tokens || 0,
+      output: tokens.completion_tokens || tokens.output_tokens || 0,
+      cached: tokens.cached_tokens || tokens.cache_read_input_tokens || 0,
+      cacheCreation: tokens.cache_creation_input_tokens || 0,
+    },
+    system: system || undefined,
+    messages,
+    tools: tools.length ? tools : undefined,
+    toolActivity: toolActivity.length ? toolActivity : undefined,
+  };
 }
 
 export function extractDeclaredTools(request) {
