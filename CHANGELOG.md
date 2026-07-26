@@ -1,5 +1,23 @@
 # Unreleased
 
+# v0.10.0 (2026-07-26)
+
+Request-detail observability, stream tracing, vinext bump, and a single-commit fork history on decolua `v0.5.40` for easier upstream rebases.
+
+## Features
+- **Usage / request detail**: store full request bodies (sanitized), `GET` request-detail + tools APIs, Request Detail modal (export) and Tools tab; capture system tools + `detailId` on chat/stream paths (IVT-0000)
+- **Stream**: assign streaming request table id for end-to-end tracing
+
+## Fixes
+- **Stream**: log flush + passthrough EOF sources for tracing; re-arm keepalive path stability
+- **Build**: drop dead `formatDoneLine` import after upstream rebase
+- **Ponytail**: stop instructing code comments as a default (IVT-0299)
+- **Logging**: reduce noise logs
+
+## Improvements
+- **Deps**: vinext `1.0.0-beta.0` → `1.0.0-beta.3`
+- **History**: squash investtal fork delta onto decolua master into one commit for simpler future rebases
+
 # v0.9.0 (2026-07-23)
 
 Sync with decolua upstream `v0.5.18` → `v0.5.40` (22 upstream patch releases). Fork history squashed onto upstream master; all investtal fork features (Members dashboard tab, per-member usage effectiveness, vinext CLI build, pm2) carry forward.
