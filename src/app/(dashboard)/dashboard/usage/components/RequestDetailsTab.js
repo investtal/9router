@@ -7,6 +7,14 @@ import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 import RequestDetailModal from "@/shared/components/RequestDetailModal";
+import { downloadTextFile } from "@/shared/utils/toonExport";
+
+const EXPORT_PERIODS = [
+  { value: "today", label: "Today" },
+  { value: "7d", label: "1 week" },
+  { value: "30d", label: "1 month" },
+  { value: "60d", label: "2 months" },
+];
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -86,6 +94,9 @@ export default function RequestDetailsTab() {
     startDate: "",
     endDate: ""
   });
+  const [exportPeriod, setExportPeriod] = useState("today");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -162,9 +173,90 @@ export default function RequestDetailsTab() {
     setFilters({ provider: "", startDate: "", endDate: "" });
   };
 
+  const handleExportToon = async () => {
+    setExporting(true);
+    setExportError("");
+    try {
+      const params = new URLSearchParams({
+        period: exportPeriod,
+        format: "toon",
+      });
+      if (filters.provider) params.set("provider", filters.provider);
+
+      const res = await fetch(`/api/usage/request-details/export?${params}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const text = await res.text();
+      const count = res.headers.get("X-Export-Count") || "?";
+      const stamp = new Date().toISOString().slice(0, 10);
+      const periodLabel = EXPORT_PERIODS.find((p) => p.value === exportPeriod)?.value || exportPeriod;
+      downloadTextFile(`9router-requests-${periodLabel}-${stamp}.toon`, text);
+      if (!text.trim() || count === "0") {
+        setExportError("Export completed with 0 requests in this range.");
+      }
+    } catch (e) {
+      console.error("TOON export failed:", e);
+      setExportError(e.message || "Failed to export TOON");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <Card padding="md">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-text-main">Export for agents</h3>
+            <p className="text-xs text-text-muted mt-0.5">
+              Download compact{" "}
+              <a
+                href="https://toonformat.dev/"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline"
+              >
+                TOON
+              </a>{" "}
+              (token-efficient vs raw JSON) for the selected date range. Uses current provider filter when set.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <select
+              id="export-period"
+              value={exportPeriod}
+              onChange={(e) => setExportPeriod(e.target.value)}
+              className={cn(
+                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
+                "min-w-[8rem] cursor-pointer"
+              )}
+              style={{ colorScheme: "auto" }}
+              aria-label="Export period"
+            >
+              {EXPORT_PERIODS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleExportToon}
+              disabled={exporting}
+              icon={exporting ? "progress_activity" : "download"}
+            >
+              {exporting ? "Exporting…" : "Export TOON"}
+            </Button>
+          </div>
+        </div>
+        {exportError && (
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            {exportError}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="flex min-w-0 flex-col gap-2">
             <label htmlFor="provider-filter" className="text-sm font-medium text-text-main">Provider</label>

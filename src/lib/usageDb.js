@@ -3,5 +3,6 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs, getMemberStats, getMemberDetail,
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getToolAggregateStats,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getRequestDetailsForExport,
+  getToolAggregateStats,
 } from "@/lib/db/index.js";
