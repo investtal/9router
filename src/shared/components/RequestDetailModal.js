@@ -11,34 +11,13 @@ import {
   extractToolActivity,
   formatBytesish,
 } from "@/shared/utils/requestDetailParse";
+import {
+  buildSingleRequestToon,
+  downloadTextFile,
+  safeFilenamePart,
+} from "@/shared/utils/toonExport";
 
 const EMPTY_OBJ = Object.freeze({});
-
-function downloadRequestJson(detail) {
-  if (!detail) return false;
-  try {
-    const id = detail.id || "request";
-    const safeId = String(id).replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      source: "9router",
-      detail,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `9router-request-${safeId}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    return true;
-  } catch (e) {
-    console.error("[RequestDetailModal] export failed:", e);
-    return false;
-  }
-}
 
 function Section({ title, children, defaultOpen = true, badge = null }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -77,6 +56,121 @@ function ScrollPre({ children, className }) {
     >
       {children}
     </pre>
+  );
+}
+
+function roleTone(role) {
+  const r = String(role || "").toLowerCase();
+  if (r === "user" || r === "human") return "bg-sky-500/15 text-sky-700 dark:text-sky-300";
+  if (r === "assistant" || r === "model" || r === "ai") return "bg-violet-500/15 text-violet-700 dark:text-violet-300";
+  if (r === "system" || r === "developer") return "bg-amber-500/15 text-amber-800 dark:text-amber-200";
+  if (r === "tool" || r === "function") return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+  return "bg-black/5 dark:bg-white/10 text-text-muted";
+}
+
+function MessageRow({ message, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const chars = message.content?.length || 0;
+  const empty = !chars;
+  const preview = message.preview || (empty ? "(empty)" : message.content.slice(0, 160));
+
+  return (
+    <div className="rounded-md border border-border overflow-hidden bg-surface">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-start gap-2 px-2.5 py-2 text-left hover:bg-bg-hover/60 transition-colors"
+      >
+        <span className={cn("material-symbols-outlined text-[16px] text-text-muted mt-0.5 shrink-0 transition-transform", open && "rotate-90")}>
+          chevron_right
+        </span>
+        <span className="font-mono text-[10px] text-text-muted shrink-0 mt-0.5 w-6">#{message.index}</span>
+        <span className={cn("text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0", roleTone(message.role))}>
+          {message.role || "unknown"}
+        </span>
+        <span className={cn("flex-1 min-w-0 text-[11px] leading-snug", empty ? "text-text-muted italic" : "text-text-main")}>
+          <span className="line-clamp-2 break-words">{preview}</span>
+        </span>
+        <span className="font-mono text-[10px] text-text-muted shrink-0 mt-0.5">{chars} ch</span>
+      </button>
+      {open && (
+        <div className="border-t border-border px-2.5 py-2 bg-black/[0.02] dark:bg-white/[0.02]">
+          {empty ? (
+            <p className="text-xs text-text-muted italic">No text content on this turn (payload may live only on tool fields).</p>
+          ) : (
+            <ScrollPre className="max-h-64 border-border/70">{message.content}</ScrollPre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MessagesList({ messages }) {
+  const [filter, setFilter] = useState("all"); // all | chat | tools | nonEmpty
+  const filtered = useMemo(() => {
+    if (filter === "chat") {
+      return messages.filter((m) => {
+        const r = String(m.role || "").toLowerCase();
+        return r === "user" || r === "assistant" || r === "human" || r === "model";
+      });
+    }
+    if (filter === "tools") {
+      return messages.filter((m) => {
+        const r = String(m.role || "").toLowerCase();
+        return r === "tool" || r === "function" || (m.content || "").includes("[tool_");
+      });
+    }
+    if (filter === "nonEmpty") {
+      return messages.filter((m) => (m.content || "").trim().length > 0);
+    }
+    return messages;
+  }, [messages, filter]);
+
+  const openFirst = useMemo(() => {
+    const idx = filtered.findIndex((m) => (m.content || "").trim().length > 0);
+    return idx >= 0 ? filtered[idx].index : -1;
+  }, [filtered]);
+
+  if (!messages.length) {
+    return <p className="text-sm text-text-muted">No messages array captured.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {[
+          ["all", `All (${messages.length})`],
+          ["chat", "User / assistant"],
+          ["tools", "Tool turns"],
+          ["nonEmpty", "With text"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setFilter(key)}
+            className={cn(
+              "px-2 py-0.5 rounded text-[11px] font-medium",
+              filter === key ? "bg-primary text-white" : "bg-bg-subtle text-text-muted hover:bg-bg-hover"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        <span className="text-[10px] text-text-muted ml-auto">
+          Showing {filtered.length} · click a row to expand
+        </span>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="text-sm text-text-muted py-2">No messages match this filter.</p>
+      ) : (
+        <div className="flex flex-col gap-1.5 max-h-[min(55vh,520px)] overflow-y-auto pr-0.5">
+          {filtered.map((m) => (
+            <MessageRow key={m.index} message={m} defaultOpen={m.index === openFirst && filtered.length <= 12} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -136,6 +230,7 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
     if (primary && typeof primary === "object") {
       const has =
         (Array.isArray(primary.messages) && primary.messages.length) ||
+        (Array.isArray(primary.input) && primary.input.length) ||
         (Array.isArray(primary.tools) && primary.tools.length) ||
         (typeof primary.system === "string" && primary.system) ||
         (typeof primary.instructions === "string" && primary.instructions);
@@ -157,8 +252,14 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
   const cached = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
 
   const handleExport = useCallback(() => {
-    if (!downloadRequestJson(detail)) {
-      setError("Failed to export JSON (payload may be too large or circular).");
+    if (!detail) return;
+    try {
+      const toon = buildSingleRequestToon(detail);
+      const id = safeFilenamePart(detail.id || "request", 80);
+      downloadTextFile(`9router-request-${id}.toon`, toon);
+    } catch (e) {
+      console.error("[RequestDetailModal] TOON export failed:", e);
+      setError("Failed to export TOON (payload may be too large or circular).");
     }
   }, [detail]);
 
@@ -173,10 +274,10 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
         detail && !loading ? (
           <div className="flex w-full items-center justify-between gap-2">
             <p className="text-[11px] text-text-muted truncate hidden sm:block">
-              Exports full stored payload (client + provider + response + tokens).
+              Export is compact TOON (system + messages + tools) — not raw multi-MB JSON.
             </p>
             <Button variant="primary" size="sm" onClick={handleExport} icon="download">
-              Export JSON
+              Export TOON
             </Button>
           </div>
         ) : null
@@ -240,21 +341,7 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
             </Section>
 
             <Section title="Messages" badge={`${messages.length}`} defaultOpen>
-              {messages.length === 0 ? (
-                <p className="text-sm text-text-muted">No messages array captured.</p>
-              ) : (
-                <div className="flex flex-col gap-2 max-h-[min(55vh,520px)] overflow-y-auto pr-1">
-                  {messages.map((m) => (
-                    <div key={m.index} className="rounded-md border border-border overflow-hidden">
-                      <div className="px-2 py-1 bg-bg-subtle text-[10px] font-semibold uppercase tracking-wide text-text-muted flex justify-between">
-                        <span>#{m.index} · {m.role}</span>
-                        <span className="font-mono normal-case">{m.content?.length || 0} ch</span>
-                      </div>
-                      <ScrollPre className="max-h-48 border-0 rounded-none">{m.content || "—"}</ScrollPre>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <MessagesList messages={messages} />
             </Section>
 
             <Section title="Declared tools" badge={`${tools.length}`} defaultOpen={tools.length > 0 && tools.length <= 30}>
