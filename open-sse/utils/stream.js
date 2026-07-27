@@ -23,7 +23,6 @@ const STREAM_MODE = {
 };
 
 /**
- * Create unified SSE transform stream
  * @param {object} options
  * @param {string} options.mode - Stream mode: translate, passthrough
  * @param {string} options.targetFormat - Provider format (for translate mode)
@@ -73,6 +72,15 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
 
+  // Track Claude-format message framing in passthrough mode. GLM/z.ai's
+  // Anthropic-compatible endpoint can close the stream mid-tool_use (network
+  // blip, slow screenshot/web_research tool). Without synthesized
+  // content_block_stop + message_stop, Claude Code's client parser leaves
+  // tool-arg partial_json buffer unterminated → "API Error: JSON Parse error:
+  // Unexpected EOF".
+  let claudeOpenBlockIndex = null;
+  let claudeMessageStopSeen = false;
+
   return new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
@@ -98,7 +106,6 @@ export function createSSEStream(options = {}) {
           currentOpenAIResponsesEvent = trimmed.slice(6).trim();
         }
 
-        // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
           let output;
           let injectedUsage = false;
@@ -107,9 +114,22 @@ export function createSSEStream(options = {}) {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
 
+              // Track Claude message framing so flush can synthesize terminal
+              // events if upstream (GLM/z.ai) closes mid-tool_use without
+              // emitting message_stop → prevents client "JSON Parse error:
+              // Unexpected EOF" during tool-arg reassembly.
+              if (sourceFormat === FORMATS.CLAUDE && parsed && typeof parsed.type === "string") {
+                if (parsed.type === "content_block_start" && typeof parsed.index === "number") {
+                  claudeOpenBlockIndex = parsed.index;
+                } else if (parsed.type === "content_block_stop") {
+                  claudeOpenBlockIndex = null;
+                } else if (parsed.type === "message_stop") {
+                  claudeMessageStopSeen = true;
+                }
+              }
+
               const idFixed = fixInvalidId(parsed);
 
-              // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
               let fieldsInjected = false;
               if (parsed.choices !== undefined) {
                 if (!parsed.object) { parsed.object = "chat.completion.chunk"; fieldsInjected = true; }
@@ -273,7 +293,6 @@ export function createSSEStream(options = {}) {
           for (const part of parsed.candidates[0].content.parts) {
             if (part.text && typeof part.text === "string") {
               totalContentLength += part.text.length;
-              // Check if this is thinking content
               if (part.thought === true) {
                 accumulatedThinking += part.text;
               } else {
@@ -302,7 +321,6 @@ export function createSSEStream(options = {}) {
         // Translate: targetFormat -> openai -> sourceFormat
         const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
 
-        // Log OpenAI intermediate chunks (if available)
         if (translated?._openaiIntermediate) {
           for (const item of translated._openaiIntermediate) {
             const openaiOutput = formatSSE(item, FORMATS.OPENAI);
@@ -313,7 +331,6 @@ export function createSSEStream(options = {}) {
         if (translated?.length > 0) {
           for (const item of translated) {
             if (item === null || item === undefined) continue;
-            // Filter empty chunks
             if (!hasValuableContent(item, sourceFormat)) {
               continue; // Skip this empty chunk
             }
@@ -322,10 +339,9 @@ export function createSSEStream(options = {}) {
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
+              item.usage = filterUsageForFormat(estimated, sourceFormat);
               state.usage = estimated;
             } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
               const buffered = addBufferToUsage(state.usage);
               item.usage = filterUsageForFormat(buffered, sourceFormat);
             }
@@ -369,11 +385,28 @@ export function createSSEStream(options = {}) {
           
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
           // Some clients (e.g. OpenClaw) expect the OpenAI-style sentinel:
-          //   data: [DONE]\n\n
           // Without it they can hang until timeout and trigger failover.
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
           if (!streamDoneSent && !isGeminiFamily) {
+            // Claude passthrough safety net (IVT-303): GLM/z.ai can close
+            // mid-tool_use without emitting message_stop. Synthesize the
+            // terminal events so the client's tool-arg partial_json buffer
+            // finalizes — otherwise Claude Code throws "API Error: JSON Parse
+            // error: Unexpected EOF".
+            if (sourceFormat === FORMATS.CLAUDE && !claudeMessageStopSeen) {
+              if (claudeOpenBlockIndex !== null) {
+                const stopBlock = formatSSE({ type: "content_block_stop", index: claudeOpenBlockIndex }, sourceFormat);
+                reqLogger?.appendConvertedChunk?.(stopBlock);
+                controller.enqueue(sharedEncoder.encode(stopBlock));
+              }
+              const msgDelta = formatSSE({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: {} }, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(msgDelta);
+              controller.enqueue(sharedEncoder.encode(msgDelta));
+              const msgStop = formatSSE({ type: "message_stop" }, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(msgStop);
+              controller.enqueue(sharedEncoder.encode(msgStop));
+            }
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
@@ -463,10 +496,8 @@ export function createSSEStream(options = {}) {
           }, state?.usage, ttftAt);
         }
       } catch (error) {
-        // Flush emits the terminal SSE event (message_stop / [DONE]). If it throws,
         // NO terminal event reaches the client → downstream parser hits
         // "API Error, JSON parse error: Unexpected EOF". Capture full context so the
-        // next occurrence is traceable to provider/model/format/last-state.
         console.error(
           `[STREAM FLUSH ERROR] provider=${provider || targetFormat} model=${model} mode=${mode} src=${sourceFormat} dst=${targetFormat} conn=${connectionId || "n/a"} lines=${sseLineCount} emitted=${sseEmittedCount} contentLen=${totalContentLength} trailingBuf=${buffer.length}B usage=${JSON.stringify(state?.usage || null)} :: ${error?.name || "Error"}: ${error?.message || error}`
         );
@@ -492,7 +523,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, sourceFormat = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -501,6 +532,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    sourceFormat
   });
 }

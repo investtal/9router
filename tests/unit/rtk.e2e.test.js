@@ -23,7 +23,6 @@ function readLogTail(bytes = 8192) {
   return buf.toString("utf8");
 }
 
-// Read new bytes appended to log since `offset`. Returns text + new offset.
 function readLogSince(offset) {
   if (!LOG_FILE || !fs.existsSync(LOG_FILE)) return { text: "", next: offset };
   const stat = fs.statSync(LOG_FILE);

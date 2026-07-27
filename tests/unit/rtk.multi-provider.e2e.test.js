@@ -75,7 +75,6 @@ async function waitForRtkLine({ minBytes, filterName, timeoutMs = 5000 }) {
   return null;
 }
 
-// Build a chat request with OpenAI-style tool_result carrying large content.
 function chatBodyWithDiff(model, diff) {
   return {
     model,
@@ -131,7 +130,6 @@ maybe("RTK multi-provider E2E", () => {
       expect(hit.saved).toBeGreaterThan(500);
       expect(hit.filters).toContain("git-diff");
 
-      // Log actual savings for visibility
       console.log(`  ✓ ${route.name}: saved ${hit.saved}B / ${hit.total}B (${hit.pct}%) filters=${hit.filters}`);
     }, 20000);
   }

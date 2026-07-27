@@ -25,7 +25,6 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getApiKeys } from "@/lib/db/repos/apiKeysRepo.js";
 
-// Log threshold for "approaching limit" early signal (fraction of limit).
 const RATE_LIMIT_NEAR_THRESHOLD = 0.8;
 
 // Look up the human-readable name for an API key value. Cheap scan; only called
@@ -54,9 +53,7 @@ async function logDailyCostCheck({ apiKey, model, provider, blocked, limit, cost
 }
 
 /**
- * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
- * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
   let body;
@@ -67,7 +64,6 @@ export async function handleChat(request, clientRawRequest = null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
   }
 
-  // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
     const url = new URL(request.url);
     clientRawRequest = {
@@ -82,7 +78,6 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
 
-  // Log API key (masked)
   const authHeader = request.headers.get("Authorization");
   const apiKey = extractApiKey(request);
   if (authHeader && apiKey) {
@@ -116,10 +111,8 @@ export async function handleChat(request, clientRawRequest = null) {
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
-  // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
-    // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
@@ -161,9 +154,6 @@ export async function handleChat(request, clientRawRequest = null) {
   return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, settings);
 }
 
-/**
- * Handle single model chat request
- */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, settings = null) {
   const modelInfo = await getModelInfo(modelStr);
 
@@ -171,7 +161,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
-      // Check for combo-specific strategy first, fallback to global
       const comboStrategies = settings?.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || settings?.comboStrategy || "fallback";
@@ -214,7 +203,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const { provider, model } = modelInfo;
 
-  // Check per-key daily cost limit before using upstream accounts
   if (apiKey) {
     const costCheck = await checkApiKeyDailyCost({ apiKey, model, provider, settings });
     if (costCheck.limit > 0) {
@@ -230,7 +218,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
   }
 
-  // Log model routing (alias → actual model)
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
   } else {
@@ -267,7 +254,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
-    // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
       const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken);
       if (pid) {

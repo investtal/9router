@@ -14,7 +14,6 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 
 /**
- * Handle embeddings request for the SSE/Next.js server.
  * Follows the same auth + fallback pattern as handleChat.
  *
  * @param {Request} request
@@ -33,7 +32,6 @@ export async function handleEmbeddings(request) {
 
   log.request("POST", `${url.pathname} | ${modelStr}`);
 
-  // Log API key (masked)
   const apiKey = extractApiKey(request);
   if (apiKey) {
     log.debug("AUTH", `API Key: ${log.maskKey(apiKey)}`);
