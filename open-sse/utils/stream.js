@@ -23,7 +23,6 @@ const STREAM_MODE = {
 };
 
 /**
- * Create unified SSE transform stream
  * @param {object} options
  * @param {string} options.mode - Stream mode: translate, passthrough
  * @param {string} options.targetFormat - Provider format (for translate mode)
@@ -107,7 +106,6 @@ export function createSSEStream(options = {}) {
           currentOpenAIResponsesEvent = trimmed.slice(6).trim();
         }
 
-        // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
           let output;
           let injectedUsage = false;
@@ -132,7 +130,6 @@ export function createSSEStream(options = {}) {
 
               const idFixed = fixInvalidId(parsed);
 
-              // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
               let fieldsInjected = false;
               if (parsed.choices !== undefined) {
                 if (!parsed.object) { parsed.object = "chat.completion.chunk"; fieldsInjected = true; }
@@ -296,7 +293,6 @@ export function createSSEStream(options = {}) {
           for (const part of parsed.candidates[0].content.parts) {
             if (part.text && typeof part.text === "string") {
               totalContentLength += part.text.length;
-              // Check if this is thinking content
               if (part.thought === true) {
                 accumulatedThinking += part.text;
               } else {
@@ -325,7 +321,6 @@ export function createSSEStream(options = {}) {
         // Translate: targetFormat -> openai -> sourceFormat
         const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
 
-        // Log OpenAI intermediate chunks (if available)
         if (translated?._openaiIntermediate) {
           for (const item of translated._openaiIntermediate) {
             const openaiOutput = formatSSE(item, FORMATS.OPENAI);
@@ -336,7 +331,6 @@ export function createSSEStream(options = {}) {
         if (translated?.length > 0) {
           for (const item of translated) {
             if (item === null || item === undefined) continue;
-            // Filter empty chunks
             if (!hasValuableContent(item, sourceFormat)) {
               continue; // Skip this empty chunk
             }
@@ -345,10 +339,9 @@ export function createSSEStream(options = {}) {
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
+              item.usage = filterUsageForFormat(estimated, sourceFormat);
               state.usage = estimated;
             } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
               const buffered = addBufferToUsage(state.usage);
               item.usage = filterUsageForFormat(buffered, sourceFormat);
             }
@@ -392,7 +385,6 @@ export function createSSEStream(options = {}) {
           
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
           // Some clients (e.g. OpenClaw) expect the OpenAI-style sentinel:
-          //   data: [DONE]\n\n
           // Without it they can hang until timeout and trigger failover.
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
@@ -504,10 +496,8 @@ export function createSSEStream(options = {}) {
           }, state?.usage, ttftAt);
         }
       } catch (error) {
-        // Flush emits the terminal SSE event (message_stop / [DONE]). If it throws,
         // NO terminal event reaches the client → downstream parser hits
         // "API Error, JSON parse error: Unexpected EOF". Capture full context so the
-        // next occurrence is traceable to provider/model/format/last-state.
         console.error(
           `[STREAM FLUSH ERROR] provider=${provider || targetFormat} model=${model} mode=${mode} src=${sourceFormat} dst=${targetFormat} conn=${connectionId || "n/a"} lines=${sseLineCount} emitted=${sseEmittedCount} contentLen=${totalContentLength} trailingBuf=${buffer.length}B usage=${JSON.stringify(state?.usage || null)} :: ${error?.name || "Error"}: ${error?.message || error}`
         );
