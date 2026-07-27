@@ -73,6 +73,15 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
 
+  // Track Claude-format message framing in passthrough mode. GLM/z.ai's
+  // Anthropic-compatible endpoint can close the stream mid-tool_use (network
+  // blip, slow screenshot/web_research tool). Without synthesized
+  // content_block_stop + message_stop, Claude Code's client parser leaves
+  // tool-arg partial_json buffer unterminated → "API Error: JSON Parse error:
+  // Unexpected EOF".
+  let claudeOpenBlockIndex = null;
+  let claudeMessageStopSeen = false;
+
   return new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
@@ -106,6 +115,20 @@ export function createSSEStream(options = {}) {
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
+
+              // Track Claude message framing so flush can synthesize terminal
+              // events if upstream (GLM/z.ai) closes mid-tool_use without
+              // emitting message_stop → prevents client "JSON Parse error:
+              // Unexpected EOF" during tool-arg reassembly.
+              if (sourceFormat === FORMATS.CLAUDE && parsed && typeof parsed.type === "string") {
+                if (parsed.type === "content_block_start" && typeof parsed.index === "number") {
+                  claudeOpenBlockIndex = parsed.index;
+                } else if (parsed.type === "content_block_stop") {
+                  claudeOpenBlockIndex = null;
+                } else if (parsed.type === "message_stop") {
+                  claudeMessageStopSeen = true;
+                }
+              }
 
               const idFixed = fixInvalidId(parsed);
 
@@ -374,6 +397,24 @@ export function createSSEStream(options = {}) {
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
           if (!streamDoneSent && !isGeminiFamily) {
+            // Claude passthrough safety net (IVT-303): GLM/z.ai can close
+            // mid-tool_use without emitting message_stop. Synthesize the
+            // terminal events so the client's tool-arg partial_json buffer
+            // finalizes — otherwise Claude Code throws "API Error: JSON Parse
+            // error: Unexpected EOF".
+            if (sourceFormat === FORMATS.CLAUDE && !claudeMessageStopSeen) {
+              if (claudeOpenBlockIndex !== null) {
+                const stopBlock = formatSSE({ type: "content_block_stop", index: claudeOpenBlockIndex }, sourceFormat);
+                reqLogger?.appendConvertedChunk?.(stopBlock);
+                controller.enqueue(sharedEncoder.encode(stopBlock));
+              }
+              const msgDelta = formatSSE({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: {} }, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(msgDelta);
+              controller.enqueue(sharedEncoder.encode(msgDelta));
+              const msgStop = formatSSE({ type: "message_stop" }, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(msgStop);
+              controller.enqueue(sharedEncoder.encode(msgStop));
+            }
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
@@ -492,7 +533,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, sourceFormat = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -501,6 +542,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    sourceFormat
   });
 }
