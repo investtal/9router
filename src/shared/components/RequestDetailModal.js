@@ -72,33 +72,33 @@ function MessageRow({ message, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
   const chars = message.content?.length || 0;
   const empty = !chars;
-  const preview = message.preview || (empty ? "(empty)" : message.content.slice(0, 160));
+  const preview = message.preview || (empty ? "(empty)" : message.content.replace(/\s+/g, " ").trim().slice(0, 200));
 
   return (
-    <div className="rounded-md border border-border overflow-hidden bg-surface">
+    <div className="border-t border-border/60 first:border-t-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-start gap-2 px-2.5 py-2 text-left hover:bg-bg-hover/60 transition-colors"
+        className="w-full flex items-center gap-2 px-1.5 py-1.5 text-left hover:bg-bg-hover/50 transition-colors"
       >
-        <span className={cn("material-symbols-outlined text-[16px] text-text-muted mt-0.5 shrink-0 transition-transform", open && "rotate-90")}>
+        <span className={cn("material-symbols-outlined text-[14px] text-text-muted shrink-0 transition-transform", open && "rotate-90")}>
           chevron_right
         </span>
-        <span className="font-mono text-[10px] text-text-muted shrink-0 mt-0.5 w-6">#{message.index}</span>
+        <span className="font-mono text-[10px] text-text-muted shrink-0 w-5">#{message.index}</span>
         <span className={cn("text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0", roleTone(message.role))}>
           {message.role || "unknown"}
         </span>
-        <span className={cn("flex-1 min-w-0 text-[11px] leading-snug", empty ? "text-text-muted italic" : "text-text-main")}>
-          <span className="line-clamp-2 break-words">{preview}</span>
+        <span className={cn("flex-1 min-w-0 text-[11px] truncate", empty ? "text-text-muted italic" : "text-text-main")}>
+          {preview}
         </span>
-        <span className="font-mono text-[10px] text-text-muted shrink-0 mt-0.5">{chars} ch</span>
+        <span className="font-mono text-[10px] text-text-muted shrink-0">{formatBytesish(chars)}</span>
       </button>
       {open && (
-        <div className="border-t border-border px-2.5 py-2 bg-black/[0.02] dark:bg-white/[0.02]">
+        <div className="px-1.5 pb-2 pt-0.5">
           {empty ? (
             <p className="text-xs text-text-muted italic">No text content on this turn (payload may live only on tool fields).</p>
           ) : (
-            <ScrollPre className="max-h-64 border-border/70">{message.content}</ScrollPre>
+            <ScrollPre className="max-h-80 border-border/70">{message.content}</ScrollPre>
           )}
         </div>
       )}
@@ -106,26 +106,38 @@ function MessageRow({ message, defaultOpen = false }) {
   );
 }
 
+const MSG_INITIAL_LIMIT = 40;
+
 function MessagesList({ messages }) {
   const [filter, setFilter] = useState("all"); // all | chat | tools | nonEmpty
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(MSG_INITIAL_LIMIT);
+
+  useEffect(() => {
+    setLimit(MSG_INITIAL_LIMIT);
+  }, [filter, query]);
+
   const filtered = useMemo(() => {
-    if (filter === "chat") {
-      return messages.filter((m) => {
+    const q = query.trim().toLowerCase();
+    const matches = (m) => {
+      if (q && !(m.content || "").toLowerCase().includes(q) && !(m.role || "").toLowerCase().includes(q)) {
+        return false;
+      }
+      if (filter === "chat") {
         const r = String(m.role || "").toLowerCase();
         return r === "user" || r === "assistant" || r === "human" || r === "model";
-      });
-    }
-    if (filter === "tools") {
-      return messages.filter((m) => {
+      }
+      if (filter === "tools") {
         const r = String(m.role || "").toLowerCase();
         return r === "tool" || r === "function" || (m.content || "").includes("[tool_");
-      });
-    }
-    if (filter === "nonEmpty") {
-      return messages.filter((m) => (m.content || "").trim().length > 0);
-    }
-    return messages;
-  }, [messages, filter]);
+      }
+      if (filter === "nonEmpty") {
+        return (m.content || "").trim().length > 0;
+      }
+      return true;
+    };
+    return messages.filter(matches);
+  }, [messages, filter, query]);
 
   const openFirst = useMemo(() => {
     const idx = filtered.findIndex((m) => (m.content || "").trim().length > 0);
@@ -135,6 +147,10 @@ function MessagesList({ messages }) {
   if (!messages.length) {
     return <p className="text-sm text-text-muted">No messages array captured.</p>;
   }
+
+  const shown = filtered.slice(0, limit);
+  const hidden = filtered.length - shown.length;
+  const autoExpand = filtered.length <= 12;
 
   return (
     <div className="flex flex-col gap-2">
@@ -157,18 +173,36 @@ function MessagesList({ messages }) {
             {label}
           </button>
         ))}
-        <span className="text-[10px] text-text-muted ml-auto">
-          Showing {filtered.length} · click a row to expand
-        </span>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search messages..."
+          className="ml-auto h-7 w-40 rounded border border-black/10 dark:border-white/10 bg-surface px-2 text-[11px] text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+        />
       </div>
       {filtered.length === 0 ? (
         <p className="text-sm text-text-muted py-2">No messages match this filter.</p>
       ) : (
-        <div className="flex flex-col gap-1.5 max-h-[min(55vh,520px)] overflow-y-auto pr-0.5">
-          {filtered.map((m) => (
-            <MessageRow key={m.index} message={m} defaultOpen={m.index === openFirst && filtered.length <= 12} />
-          ))}
-        </div>
+        <>
+          <span className="text-[10px] text-text-muted">
+            Showing {shown.length} of {filtered.length} · click a row to expand
+          </span>
+          <div className="rounded-md border border-border overflow-hidden bg-surface">
+            {shown.map((m) => (
+              <MessageRow key={m.index} message={m} defaultOpen={autoExpand && m.index === openFirst} />
+            ))}
+          </div>
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setLimit((l) => l + MSG_INITIAL_LIMIT)}
+              className="self-start text-[11px] font-medium text-primary hover:underline"
+            >
+              Show {Math.min(MSG_INITIAL_LIMIT, hidden)} more ({hidden} hidden)
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -270,6 +304,7 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
       title="Request detail"
       size="full"
       className="max-h-[90vh] flex flex-col"
+      bodyClassName="max-h-[calc(90vh-4rem)] overflow-y-auto custom-scrollbar"
       footer={
         detail && !loading ? (
           <div className="flex w-full items-center justify-between gap-2">
@@ -283,7 +318,7 @@ export default function RequestDetailModal({ isOpen, onClose, detailId = null, d
         ) : null
       }
     >
-      <div className="flex flex-col gap-3 max-h-[calc(90vh-4rem)] overflow-y-auto p-1">
+      <div className="flex flex-col gap-3 p-1">
         {loading && (
           <div className="flex items-center gap-2 text-text-muted text-sm py-8 justify-center">
             <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
