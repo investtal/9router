@@ -8,7 +8,6 @@ import { CODEX_REVIEW_SUFFIX } from "../providers/models/helpers.js";
 export { PROVIDER_MODELS };
 
 
-// Helper functions
 export function getProviderModels(aliasOrId) {
   return PROVIDER_MODELS[aliasOrId] || [];
 }
@@ -49,10 +48,25 @@ export function findModelName(aliasOrId, modelId) {
   return found?.name || modelId;
 }
 
+// OpenModel (and similar multi-protocol gateways): protocol is model-dependent.
+// Seeded models carry targetFormat; passthrough / newly listed models fall back to name inference.
+function inferOpenModelFormat(modelId) {
+  if (typeof modelId !== "string") return null;
+  const m = modelId.toLowerCase();
+  if (m.startsWith("gemini-")) return "gemini";
+  if (/^(gpt-|o[134]|grok-|hy3)/.test(m)) return "openai-responses";
+  return null; // Messages (claude) is the provider default
+}
+
 export function getModelTargetFormat(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  return modelTargetFormat(findModel(models, modelId, aliasOrId));
+  const found = findModel(models, modelId, aliasOrId);
+  const explicit = modelTargetFormat(found);
+  if (explicit) return explicit;
+  if (aliasOrId === "openmodel" || aliasOrId === "om") {
+    return inferOpenModelFormat(modelId);
+  }
+  return null;
 }
 
 export function getModelType(aliasOrId, modelId) {
@@ -99,8 +113,6 @@ export function getModelsByProviderId(providerId) {
   return PROVIDER_MODELS[alias] || [];
 }
 
-// Get strip list for a model entry (explicit opt-in only)
-// Returns array of content types to strip, e.g. ["image", "audio"]
 export function getModelStrip(alias, modelId) {
   return modelStrip(findModel(PROVIDER_MODELS[alias], modelId, alias));
 }

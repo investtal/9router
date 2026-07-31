@@ -47,7 +47,7 @@ export function detectFormat(body) {
   if (
     body.stream_options ||           // OpenAI streaming options
     body.response_format ||           // JSON mode, etc.
-    body.logprobs !== undefined ||    // Log probabilities
+    body.logprobs !== undefined ||
     body.top_logprobs !== undefined ||
     body.n !== undefined ||           // Number of completions
     body.presence_penalty !== undefined ||  // Penalties
@@ -71,11 +71,9 @@ export function detectFormat(body) {
       // OpenAI multimodal has: text, image_url (note the difference)
       if (firstContent?.type === "text" && !body.model?.includes("/")) {
         // Could be Claude or OpenAI multimodal
-        // Check for Claude-specific fields
         if (body.system || body.anthropic_version) {
           return "claude";
         }
-        // Check if image format is Claude (source.type) vs OpenAI (image_url.url)
         const hasClaudeImage = firstMsg.content.some(c => 
           c.type === "image" && c.source?.type === "base64"
         );
@@ -94,7 +92,6 @@ export function detectFormat(body) {
     }
     
     // If content is string, it's likely OpenAI (Claude also supports this)
-    // Check for other Claude-specific indicators
     if (body.system !== undefined || body.anthropic_version) {
       return "claude";
     }
@@ -104,7 +101,6 @@ export function detectFormat(body) {
   return "openai";
 }
 
-// Get provider config (internal — no external runtime consumer)
 function getProviderConfig(provider) {
   if (isOpenAICompatible(provider)) {
     const apiType = getOpenAICompatibleType(provider);
@@ -124,7 +120,6 @@ function getProviderConfig(provider) {
   return PROVIDERS[provider] || PROVIDERS.openai;
 }
 
-// Get target format for provider
 export function getTargetFormat(provider) {
   if (isOpenAICompatible(provider)) {
     return getOpenAICompatibleType(provider) === "responses" ? "openai-responses" : "openai";
@@ -136,17 +131,16 @@ export function getTargetFormat(provider) {
   return config.format || "openai";
 }
 
-// Resolve which transport to use for a provider given the client sourceFormat.
-// Multi-endpoint providers (transport.transports[]) pick the entry matching sourceFormat
-// to avoid lossy translation; falls back to the default transport when no match.
-export function resolveTransport(provider, sourceFormat) {
+// Multi-endpoint providers (transport.transports[]) pick the entry matching `format`
+// (model targetFormat when set, else client sourceFormat for zero-translation).
+// Falls back to the default transport when no match.
+export function resolveTransport(provider, format) {
   const config = PROVIDERS[provider];
   const transports = config?.transports;
   if (!Array.isArray(transports) || !transports.length) return null;
-  return transports.find(t => t.format === sourceFormat) || null;
+  return transports.find(t => t.format === format) || null;
 }
 
-// Check if last message is from user
 export function isLastMessageFromUser(body) {
   const messages = body.messages || body.contents;
   if (!messages?.length) return true;
@@ -154,12 +148,10 @@ export function isLastMessageFromUser(body) {
   return lastMsg?.role === "user";
 }
 
-// Check if request has thinking config
 export function hasThinkingConfig(body) {
   return !!(body.reasoning_effort || body.thinking?.type === "enabled");
 }
 
-// Normalize provider-native thinking config based on last message role.
 // OpenAI reasoning_effort is request-level and must survive tool-result turns.
 export function normalizeThinkingConfig(body) {
   if (!isLastMessageFromUser(body)) {
