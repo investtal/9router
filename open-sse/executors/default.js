@@ -22,7 +22,6 @@ function setAuth(headers, spec, token) {
   headers[spec.header] = spec.scheme === "bearer" ? `Bearer ${token}` : token;
 }
 
-// Resolve auth onto headers from a descriptor.
 function applyAuth(headers, desc, credentials) {
   if (desc.combined) {
     // combined providers always set the header (legacy behavior, incl. noAuth → "Bearer undefined")
@@ -211,7 +210,6 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   // Generic OAuth refresh for the common {grant_type, refresh_token, client_id[, ...]} shape.
-  // grant = REFRESH_GRANTS[provider]; client creds resolved from PROVIDERS or this.config.
   refreshFromGrant(credentials, proxyOptions) {
     const grant = REFRESH_GRANTS[this.provider];
     const params = { grant_type: "refresh_token", refresh_token: credentials.refreshToken, ...grant.params(this) };

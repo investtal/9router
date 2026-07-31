@@ -8,7 +8,6 @@ import { CODEX_REVIEW_SUFFIX } from "../providers/models/helpers.js";
 export { PROVIDER_MODELS };
 
 
-// Helper functions
 export function getProviderModels(aliasOrId) {
   return PROVIDER_MODELS[aliasOrId] || [];
 }
@@ -114,8 +113,6 @@ export function getModelsByProviderId(providerId) {
   return PROVIDER_MODELS[alias] || [];
 }
 
-// Get strip list for a model entry (explicit opt-in only)
-// Returns array of content types to strip, e.g. ["image", "audio"]
 export function getModelStrip(alias, modelId) {
   return modelStrip(findModel(PROVIDER_MODELS[alias], modelId, alias));
 }

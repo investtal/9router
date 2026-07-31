@@ -217,7 +217,6 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     xf.push(`CAVEMAN:${cavemanLevel}`);
   }
 
-  // Ponytail: inject lazy-senior-dev system prompt
   if (tokenSaverEnabled && ponytailEnabled && ponytailLevel) {
     injectPonytail(translatedBody, finalFormat, ponytailLevel);
     xf.push(`PONYTAIL:${ponytailLevel}`);

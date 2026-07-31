@@ -7,7 +7,6 @@ import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-t
 import { normalizeProviderId } from "@/lib/providerNormalization";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
-// Returns true if API key is accepted (status !== 401 && !== 403).
 async function probeWebProvider(provider, apiKey) {
   const p = AI_PROVIDERS[provider];
   if (!p) return null;
@@ -42,7 +41,6 @@ async function probeWebProvider(provider, apiKey) {
 }
 
 // Probe a media provider (tts/embedding/stt/image/video) using *Config.
-// Returns true if API key is accepted; null to skip (let default handler decide).
 async function probeMediaProvider(provider, apiKey) {
   const p = AI_PROVIDERS[provider];
   if (!p) return null;
@@ -95,7 +93,6 @@ export async function POST(request) {
     let isValid = false;
     let error = null;
 
-    // Validate with each provider
     try {
       if (isOpenAICompatibleProvider(provider)) {
         const node = await getProviderNodeById(provider);
@@ -152,7 +149,7 @@ export async function POST(request) {
 
         let normalizedBase = node.baseUrl?.trim().replace(/\/$/, "") || "";
         if (normalizedBase.endsWith("/messages")) {
-          normalizedBase = normalizedBase.slice(0, -9); // remove /messages
+          normalizedBase = normalizedBase.slice(0, -9);
         }
 
         const messagesUrl = `${normalizedBase}/v1/messages`;
@@ -453,7 +450,6 @@ export async function POST(request) {
               max_tokens: 10,
             }),
           });
-          // Returns 401 for invalid key, 200 for valid, 400 for malformed
           isValid = res.status === 200 || res.status === 400;
           break;
         }
@@ -463,7 +459,6 @@ export async function POST(request) {
           // SA JSON: attempt token mint via JWT assertion
           const saJson = (() => { try { const p = JSON.parse(apiKey); return p.type === "service_account" ? p : null; } catch { return null; } })();
           if (saJson) {
-            // Validate SA JSON has required fields
             isValid = !!(saJson.client_email && saJson.private_key && saJson.project_id);
           } else {
             // Raw key: probe Vertex — 404 means key is valid (model just doesn't exist), 401 means invalid key
@@ -592,7 +587,6 @@ export async function POST(request) {
             isValid = true;
             break;
           }
-          // Build auth headers based on cfg.authHeader (default: bearer)
           const headers = { "Content-Type": "application/json", ...(cfg.headers || {}) };
           if (cfg.authHeader === "x-api-key") headers["X-API-Key"] = apiKey;
           else headers["Authorization"] = `Bearer ${apiKey}`;
