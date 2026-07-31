@@ -23,4 +23,14 @@ export const FILTERS = {
     (Array.isArray(models) ? models : [])
       .filter((m) => m.id?.startsWith("mimo") || m.name?.toLowerCase().includes("mimo"))
       .map((m) => ({ id: m.id, name: m.name || m.id })),
+
+  // OpenModel public catalog: { key, provider_name, supported_protocols, ... }
+  openmodel: (models) =>
+    (Array.isArray(models) ? models : [])
+      .map((m) => {
+        const id = m.key || m.id;
+        if (!id) return null;
+        return { id, name: m.name || id };
+      })
+      .filter(Boolean),
 };
