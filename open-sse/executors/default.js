@@ -117,9 +117,13 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
-    // Runtime transport (multi-endpoint providers): use the sourceFormat-matched endpoint
+    // Runtime transport (multi-endpoint providers): use the format-matched endpoint
     const rt = credentials?.runtimeTransport;
     if (rt?.baseUrl) {
+      // Gemini protocol encodes model + action in the path (not a fixed chat URL)
+      if (rt.format === "gemini") {
+        return `${rt.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
+      }
       return rt.urlSuffix ? `${rt.baseUrl}${rt.urlSuffix}` : rt.baseUrl;
     }
     if (this.provider?.startsWith?.("openai-compatible-")) {

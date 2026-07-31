@@ -58,8 +58,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelTargetFormat = getModelTargetFormat(alias, model);
-  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation
-  const runtimeTransport = resolveTransport(provider, sourceFormat);
+  // Multi-endpoint providers: prefer model.targetFormat (protocol is model-dependent for
+  // gateways like OpenModel), else match client sourceFormat for zero-translation passthrough.
+  const runtimeTransport = resolveTransport(provider, modelTargetFormat || sourceFormat);
   const targetFormat = modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider);
   if (runtimeTransport && credentials) credentials.runtimeTransport = runtimeTransport;
   const stripList = getModelStrip(alias, model);
