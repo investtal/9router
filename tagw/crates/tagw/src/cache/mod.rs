@@ -41,14 +41,17 @@ impl ConfigCache {
         }
     }
 
-    /// Load active (non-revoked) member keys from SQLite into the cache.
+    /// Load active member keys and API-key account pools from SQLite into the cache.
     pub fn load(&self, db: &Db) -> Result<()> {
         let rows = load_active_keys(db).context("config cache load keys")?;
         self.replace_keys(rows);
+        let pools = crate::providers::api_key::load_account_pools(db)
+            .context("config cache load account pools")?;
+        self.replace_account_pools(pools);
         Ok(())
     }
 
-    /// Reload after mutate (create/revoke). Same as `load`.
+    /// Reload after mutate (keys or providers). Same as `load`.
     pub fn reload(&self, db: &Db) -> Result<()> {
         self.load(db)
     }
@@ -125,13 +128,22 @@ impl ConfigCache {
         None
     }
 
-    /// Replace the full account pool for `pool_key` (tests + future provider load).
+    /// Replace the full account pool for `pool_key` (tests + manual inject).
     pub fn set_account_pool(&self, pool_key: impl Into<String>, accounts: Vec<CachedAccount>) {
         let mut guard = self
             .account_pools
             .write()
             .expect("config cache account_pools lock poisoned");
         guard.insert(pool_key.into(), accounts);
+    }
+
+    /// Replace all account pools (loaded from DB).
+    pub fn replace_account_pools(&self, pools: HashMap<String, Vec<CachedAccount>>) {
+        let mut guard = self
+            .account_pools
+            .write()
+            .expect("config cache account_pools lock poisoned");
+        *guard = pools;
     }
 
     /// Clear all account pools (tests).

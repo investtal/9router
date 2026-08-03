@@ -5,6 +5,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod providers;
 pub mod proxy;
 pub mod router;
 pub mod state;

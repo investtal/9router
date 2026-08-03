@@ -19,6 +19,7 @@ pub fn build_app(state: AppState) -> Router {
             }),
         )
         .merge(admin::keys::router())
+        .merge(admin::providers::router())
         // OpenAI-compatible passthrough: POST /v1/chat/completions and other /v1/*
         .route("/v1/{*path}", any(proxy::openai::proxy_openai))
         .with_state(state)
