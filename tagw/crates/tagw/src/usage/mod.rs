@@ -5,6 +5,7 @@
 //! disk I/O.
 
 mod cost;
+pub mod query;
 mod writer;
 
 pub use cost::estimate_cost;

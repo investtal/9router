@@ -26,6 +26,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(admin::keys::router())
         .merge(admin::providers::router())
         .merge(admin::users::router())
+        .merge(admin::usage_routes::router())
         .merge(oauth::router())
         // Anthropic Messages (Claude Code) — registered before OpenAI catch-all.
         .route("/v1/messages", post(proxy::anthropic::proxy_anthropic))
