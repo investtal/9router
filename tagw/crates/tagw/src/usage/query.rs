@@ -228,6 +228,22 @@ pub fn query_requests(db: &Db, filters: &RequestFilters) -> Result<RequestListRe
     })
 }
 
+/// Single request log by id (detail drawer / modal).
+pub fn query_request_by_id(db: &Db, id: &str) -> Result<Option<RequestLogRow>, AppError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id, created_at, member_key_id, provider_id, account_id, model, tool, status,
+                    prompt_tokens, completion_tokens, cached_tokens, cost_est,
+                    latency_ms, ttft_ms, usage_incomplete, error
+             FROM request_logs WHERE id = ?1",
+            params![id],
+            map_request_row,
+        )
+        .optional()
+    })
+    .map_err(AppError::Internal)
+}
+
 /// Member × model aggregate cells for the given range.
 pub fn query_members(
     db: &Db,

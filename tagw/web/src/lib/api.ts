@@ -216,6 +216,10 @@ export async function fetchOverview(range: Range): Promise<UsageOverview> {
   return apiFetch<UsageOverview>(`/api/usage/overview?${rangeQuery(range)}`);
 }
 
+export async function fetchRequestDetail(id: string): Promise<RequestLogRow> {
+  return apiFetch<RequestLogRow>(`/api/usage/requests/${encodeURIComponent(id)}`);
+}
+
 export async function fetchRequests(params: {
   limit?: number;
   member_key_id?: string;

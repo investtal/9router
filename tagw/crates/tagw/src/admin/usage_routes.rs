@@ -10,13 +10,15 @@ use crate::auth::dashboard::AuthUser;
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::usage::query::{
-    clamp_limit, query_member_detail, query_members, query_overview, query_requests, RequestFilters,
+    clamp_limit, query_member_detail, query_members, query_overview, query_request_by_id,
+    query_requests, RequestFilters,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/usage/overview", get(usage_overview))
         .route("/api/usage/requests", get(usage_requests))
+        .route("/api/usage/requests/{id}", get(usage_request_detail))
         .route("/api/usage/members", get(usage_members))
         .route("/api/usage/members/{key_id}", get(usage_member_detail))
 }
@@ -69,6 +71,16 @@ async fn usage_requests(
     };
     let list = query_requests(&state.db, &filters)?;
     Ok(Json(list))
+}
+
+async fn usage_request_detail(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<crate::usage::query::RequestLogRow>, AppError> {
+    query_request_by_id(&state.db, &id)?
+        .map(Json)
+        .ok_or_else(|| AppError::NotFound(format!("request '{id}' not found")))
 }
 
 #[derive(Debug, Deserialize)]
