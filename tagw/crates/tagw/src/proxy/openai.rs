@@ -1,7 +1,9 @@
 //! OpenAI-compatible `/v1/*` reverse proxy with streaming passthrough.
 //!
-//! Account selection via [`AccountRouter`] over [`crate::state::OPENAI_COMPAT_POOL_KEY`]
-//! (round-robin + fail-over). When that pool is empty, falls back to `TAGW_UPSTREAM` (dev).
+//! Account selection via [`AccountRouter`] over a pool resolved from the request
+//! `model` ([`crate::router::resolve_openai_pool_key`]) — type-specific pools
+//! when available, else [`crate::state::OPENAI_COMPAT_POOL_KEY`]. Fail-over stays
+//! within the same pool. When that pool is empty, falls back to `TAGW_UPSTREAM` (dev).
 //! Anthropic/Claude accounts are **not** in this pool — use `/v1/messages`.
 
 use std::sync::{Arc, Mutex};
@@ -17,8 +19,8 @@ use crate::auth::member_key::MemberContext;
 use crate::error::AppError;
 use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
-use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
-use crate::state::{AppState, OPENAI_COMPAT_POOL_KEY};
+use crate::router::{resolve_openai_pool_key, AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
+use crate::state::AppState;
 use crate::usage::{estimate_cost, UsageEvent};
 
 /// Max side-channel line buffer for usage parse. Cap prevents unbounded hold of
@@ -399,7 +401,9 @@ pub async fn proxy_openai(
         .await
         .map_err(|e| AppError::BadRequest(format!("request body: {e}")))?;
 
-    let pool_accounts = state.cache.enabled_accounts(OPENAI_COMPAT_POOL_KEY);
+    let model_hint = parse_model_from_body(&body_bytes);
+    let pool_key = resolve_openai_pool_key(model_hint.as_deref(), &state.cache);
+    let pool_accounts = state.cache.enabled_accounts(&pool_key);
 
     if !pool_accounts.is_empty() {
         return proxy_with_router(
@@ -410,12 +414,13 @@ pub async fn proxy_openai(
             &path_and_query,
             &req_headers,
             body_bytes,
+            &pool_key,
             &pool_accounts,
         )
         .await;
     }
 
-    // Dev fallback: pure TAGW_UPSTREAM when openai_compat pool is empty.
+    // Dev fallback: pure TAGW_UPSTREAM when resolved pool is empty.
     let base = state
         .upstream_base
         .as_ref()
@@ -436,6 +441,18 @@ pub async fn proxy_openai(
         upstream_res,
         None,
     ))
+}
+
+/// Best-effort extract of `model` from a JSON request body (buffered for fail-over).
+fn parse_model_from_body(body: &Bytes) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    v.get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Ensure a fresh Bearer for an OAuth account (skewed refresh when near expiry).
@@ -477,6 +494,8 @@ fn should_failover_status(status: u16, oauth_401_after_refresh: bool) -> bool {
 /// 1. `ensure_access_token` before each upstream hop (refresh if near expiry).
 /// 2. On upstream 401: force-refresh once, retry **same** account once, then fail-over.
 /// Never switches accounts after the first client body byte.
+///
+/// Fail-over stays within `pool_key` (same RR set for all attempts).
 async fn proxy_with_router(
     state: &AppState,
     member: &MemberContext,
@@ -485,6 +504,7 @@ async fn proxy_with_router(
     path_and_query: &str,
     req_headers: &HeaderMap,
     body_bytes: Bytes,
+    pool_key: &str,
     accounts: &[AccountRef],
 ) -> Result<Response, AppError> {
     let mut last_error: Option<AppError> = None;
@@ -492,10 +512,7 @@ async fn proxy_with_router(
     let mut last_account: Option<AccountRef> = None;
 
     for attempt in 0..MAX_FAILOVER_ATTEMPTS {
-        let Some(mut account) = state
-            .account_router
-            .pick(OPENAI_COMPAT_POOL_KEY, accounts)
-        else {
+        let Some(mut account) = state.account_router.pick(pool_key, accounts) else {
             break;
         };
 
@@ -786,5 +803,14 @@ mod tests {
         assert_eq!(m.prompt_tokens, 10);
         assert_eq!(m.completion_tokens, 2);
         assert!(m.line_buf.is_empty());
+    }
+
+    #[test]
+    fn parse_model_from_body_extracts_model() {
+        let body = Bytes::from(r#"{"model":"glm-4","messages":[]}"#);
+        assert_eq!(parse_model_from_body(&body).as_deref(), Some("glm-4"));
+        assert!(parse_model_from_body(&Bytes::new()).is_none());
+        assert!(parse_model_from_body(&Bytes::from("not-json")).is_none());
+        assert!(parse_model_from_body(&Bytes::from(r#"{"messages":[]}"#)).is_none());
     }
 }

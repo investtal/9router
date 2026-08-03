@@ -445,6 +445,8 @@ pub fn set_account_enabled(
 /// - One pool per `provider_id` (enabled accounts only when both provider+account enabled)
 /// - [`OPENAI_COMPAT_POOL_KEY`]: OpenAI-wire enabled accounts (OpenAI proxy RR)
 /// - [`ANTHROPIC_POOL_KEY`]: Anthropic-wire enabled accounts (Messages proxy RR)
+/// - `type:{provider_type}`: per-type OpenAI-wire pools for model-based routing
+///   (e.g. `type:glm`, `type:deepseek`)
 ///
 /// Disabled providers or accounts appear with `enabled: false` only in provider-id pools so
 /// diagnostics can still see them; they are **not** added to synthetic RR pools as enabled.
@@ -478,6 +480,7 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
     let mut openai_compat_pool: Vec<CachedAccount> = Vec::new();
     let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
+    let mut type_pools: HashMap<String, Vec<CachedAccount>> = HashMap::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type_str) in rows
     {
@@ -534,7 +537,11 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
         // Synthetic RR pools: only effectively enabled accounts, split by wire format.
         if enabled {
             if provider_type.is_openai_compat_wire() {
-                openai_compat_pool.push(cached);
+                openai_compat_pool.push(cached.clone());
+                type_pools
+                    .entry(crate::router::type_pool_key(provider_type.as_str()))
+                    .or_default()
+                    .push(cached);
             } else if provider_type == ApiKeyProviderType::Anthropic {
                 anthropic_pool.push(cached);
             }
@@ -543,6 +550,9 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
 
     by_provider.insert(OPENAI_COMPAT_POOL_KEY.to_string(), openai_compat_pool);
     by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
+    for (k, v) in type_pools {
+        by_provider.insert(k, v);
+    }
     Ok(by_provider)
 }
 

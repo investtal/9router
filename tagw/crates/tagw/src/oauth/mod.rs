@@ -314,6 +314,7 @@ pub fn insert_oauth_account(
 /// Synthetic pools (enabled only):
 /// - [`OPENAI_COMPAT_POOL_KEY`]: OpenAI-shaped OAuth (`codex`, `xai`, `kimi`)
 /// - [`ANTHROPIC_POOL_KEY`]: Claude OAuth (Anthropic Messages wire)
+/// - `type:{provider_type}`: per-type pools for model-based routing (e.g. `type:kimi`)
 ///
 /// Other OAuth types (e.g. `antigravity`) stay on per-`provider_id` pools only.
 pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<CachedAccount>>> {
@@ -344,6 +345,7 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
     let mut openai_compat_pool: Vec<CachedAccount> = Vec::new();
     let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
+    let mut type_pools: HashMap<String, Vec<CachedAccount>> = HashMap::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type) in rows {
         let creds: OAuthCredentials = match serde_json::from_str(&creds_raw) {
@@ -394,7 +396,11 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
             .push(cached.clone());
         if enabled {
             if is_openai_oauth_type(&provider_type) {
-                openai_compat_pool.push(cached);
+                openai_compat_pool.push(cached.clone());
+                type_pools
+                    .entry(crate::router::type_pool_key(&provider_type))
+                    .or_default()
+                    .push(cached);
             } else if provider_type == "claude" {
                 // Claude OAuth is Anthropic Messages-compatible only.
                 anthropic_pool.push(cached);
@@ -404,6 +410,9 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
     }
     by_provider.insert(OPENAI_COMPAT_POOL_KEY.to_string(), openai_compat_pool);
     by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
+    for (k, v) in type_pools {
+        by_provider.insert(k, v);
+    }
     Ok(by_provider)
 }
 

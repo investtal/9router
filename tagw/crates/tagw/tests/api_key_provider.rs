@@ -563,3 +563,119 @@ async fn openai_and_anthropic_pools_do_not_cross_contaminate() {
         String::from_utf8_lossy(&body)
     );
 }
+
+/// Model `glm-4` routes to `type:glm` (not an empty openai_compat-only path).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_glm4_routes_to_type_glm_pool() {
+    use tagw::router::{resolve_openai_pool_key, type_pool_key};
+
+    let glm_mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer sk-glm-route"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"id":"from-type-glm","object":"chat.completion"}"#),
+        )
+        .expect(1)
+        .mount(&glm_mock)
+        .await;
+
+    let oai_mock = MockServer::start().await;
+    // Must not receive glm-4 traffic when type:glm is populated.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"id":"from-oai"}"#))
+        .expect(0)
+        .mount(&oai_mock)
+        .await;
+
+    let state = AppState::new_for_test().await;
+
+    let glm_prov = create_provider(
+        &state.db,
+        &CreateProviderRequest {
+            provider_type: "glm".into(),
+            name: "GLM only".into(),
+            enabled: Some(true),
+            config_json: None,
+        },
+    )
+    .unwrap();
+    create_account(
+        &state.db,
+        &glm_prov.id,
+        &CreateAccountRequest {
+            label: "glm".into(),
+            api_key: "sk-glm-route".into(),
+            base_url: Some(glm_mock.uri()),
+            models: None,
+            enabled: Some(true),
+        },
+    )
+    .unwrap();
+
+    let oai_prov = create_provider(
+        &state.db,
+        &CreateProviderRequest {
+            provider_type: "openai_compat".into(),
+            name: "OAI".into(),
+            enabled: Some(true),
+            config_json: None,
+        },
+    )
+    .unwrap();
+    create_account(
+        &state.db,
+        &oai_prov.id,
+        &CreateAccountRequest {
+            label: "oai".into(),
+            api_key: "sk-oai-route".into(),
+            base_url: Some(oai_mock.uri()),
+            models: None,
+            enabled: Some(true),
+        },
+    )
+    .unwrap();
+    state.cache.reload(&state.db).unwrap();
+
+    let type_glm = type_pool_key("glm");
+    assert_eq!(state.cache.enabled_accounts(&type_glm).len(), 1);
+    assert_eq!(
+        state.cache.enabled_accounts(&type_glm)[0].upstream_base,
+        glm_mock.uri()
+    );
+    // Aggregate has both; model routing must still prefer type:glm for glm-4.
+    assert_eq!(state.cache.enabled_accounts(OPENAI_COMPAT_POOL_KEY).len(), 2);
+    assert_eq!(
+        resolve_openai_pool_key(Some("glm-4"), &state.cache),
+        type_glm
+    );
+
+    let (row, plaintext) = create_member_key(&state.db, "model-route").unwrap();
+    state.cache.upsert(&row);
+    let app = build_app(state);
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"glm-4","messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("from-type-glm"),
+        "glm-4 must hit type:glm accounts, got {}",
+        String::from_utf8_lossy(&body)
+    );
+}
