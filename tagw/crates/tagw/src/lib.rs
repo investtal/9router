@@ -9,6 +9,7 @@ pub mod live;
 pub mod oauth;
 pub mod providers;
 pub mod proxy;
+pub mod quota;
 pub mod router;
 pub mod state;
 pub mod usage;

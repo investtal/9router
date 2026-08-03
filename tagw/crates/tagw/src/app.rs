@@ -7,6 +7,7 @@ use crate::auth::oidc;
 use crate::live;
 use crate::oauth;
 use crate::proxy;
+use crate::quota;
 use crate::state::AppState;
 
 pub fn build_app(state: AppState) -> Router {
@@ -29,6 +30,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(admin::users::router())
         .merge(admin::usage_routes::router())
         .merge(live::router())
+        .merge(quota::router())
         .merge(oauth::router())
         // Anthropic Messages (Claude Code) — registered before OpenAI catch-all.
         .route("/v1/messages", post(proxy::anthropic::proxy_anthropic))
