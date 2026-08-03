@@ -3,6 +3,7 @@ use tagw::cache::ConfigCache;
 use tagw::config::Config;
 use tagw::db::Db;
 use tagw::state::AppState;
+use tagw::usage::{spawn_usage_writer, USAGE_CHANNEL_CAPACITY};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,7 +17,9 @@ async fn main() -> anyhow::Result<()> {
     db.migrate()?;
     let cache = ConfigCache::new();
     cache.load(&db)?;
-    let state = AppState::new(db, cache);
+    let (usage_tx, usage_rx) = tokio::sync::mpsc::channel(USAGE_CHANNEL_CAPACITY);
+    let _usage_writer = spawn_usage_writer(db.clone(), usage_rx);
+    let state = AppState::new(db, cache, usage_tx);
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("listening on {}", cfg.bind);
