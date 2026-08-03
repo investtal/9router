@@ -3,6 +3,7 @@ use axum::Router;
 
 use crate::admin;
 use crate::auth::dashboard;
+use crate::auth::oidc;
 use crate::oauth;
 use crate::proxy;
 use crate::state::AppState;
@@ -21,6 +22,7 @@ pub fn build_app(state: AppState) -> Router {
             }),
         )
         .merge(dashboard::router())
+        .merge(oidc::router())
         .merge(admin::keys::router())
         .merge(admin::providers::router())
         .merge(admin::users::router())
