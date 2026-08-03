@@ -81,12 +81,17 @@ impl OAuthProvider for AntigravityProvider {
     }
 
     async fn exchange_code(&self, code: &str, pkce: &Pkce) -> anyhow::Result<TokenSet> {
+        // Authorize sends code_challenge (S256). Google requires the matching
+        // code_verifier on the token request ("Missing code verifier" otherwise).
+        // 9router's CLI AntigravityService omits PKCE entirely; we keep PKCE and
+        // complete it correctly here (same client_id/secret).
         let body = [
             ("grant_type", "authorization_code"),
             ("client_id", self.client_id.as_str()),
             ("client_secret", self.client_secret.as_str()),
             ("code", code),
             ("redirect_uri", pkce.redirect_uri.as_str()),
+            ("code_verifier", pkce.code_verifier.as_str()),
         ];
         let res = self
             .http
