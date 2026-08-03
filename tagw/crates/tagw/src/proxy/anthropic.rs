@@ -450,12 +450,60 @@ fn stream_upstream_response(
     response
 }
 
-/// Resolve accounts: anthropic pool only → empty (caller uses TAGW_UPSTREAM).
+/// Resolve accounts for Anthropic Messages.
 ///
-/// Never falls back to the OpenAI-compat pool (would send Messages traffic to glm/etc.).
-fn resolve_accounts(state: &AppState) -> (Vec<AccountRef>, &'static str) {
+/// 1. Native anthropic-pool accounts first.
+/// 2. Else GLM (and similar) OpenAI-coding bases that expose a **separate** Anthropic
+///    Messages endpoint (z.ai: `https://api.z.ai/api/anthropic`) — rewrite base and use
+///    those accounts so Claude Code works when only GLM is configured.
+///
+/// Never raw-forward `/v1/messages` onto OpenAI `…/paas/v4` (that yields `/v4/v1/messages` 404).
+fn resolve_accounts(state: &AppState) -> (Vec<AccountRef>, String) {
     let anthropic = state.cache.enabled_accounts(ANTHROPIC_POOL_KEY);
-    (anthropic, ANTHROPIC_POOL_KEY)
+    if !anthropic.is_empty() {
+        return (anthropic, ANTHROPIC_POOL_KEY.to_string());
+    }
+
+    // Bridge: type:glm accounts → Anthropic Messages base when z.ai coding URL is configured.
+    let mut bridged: Vec<AccountRef> = Vec::new();
+    for mut acct in state.cache.enabled_accounts("type:glm") {
+        if let Some(new_base) = crate::proxy::url::glm_anthropic_messages_base(&acct.upstream_base)
+        {
+            acct.upstream_base = new_base.to_string();
+            bridged.push(acct);
+        }
+    }
+    // Also scan openai_compat aggregate for z.ai coding bases (if type:glm empty).
+    if bridged.is_empty() {
+        for mut acct in state
+            .cache
+            .enabled_accounts(crate::state::OPENAI_COMPAT_POOL_KEY)
+        {
+            if let Some(new_base) =
+                crate::proxy::url::glm_anthropic_messages_base(&acct.upstream_base)
+            {
+                acct.upstream_base = new_base.to_string();
+                bridged.push(acct);
+            }
+        }
+    }
+    if !bridged.is_empty() {
+        // Inject ephemeral pool for RR (keyed uniquely so we don't clobber type:glm OpenAI pool).
+        let key = "bridge:glm-anthropic".to_string();
+        state.cache.set_account_pool(
+            key.clone(),
+            bridged
+                .iter()
+                .map(|a| crate::cache::CachedAccount {
+                    account: a.clone(),
+                    enabled: true,
+                })
+                .collect(),
+        );
+        return (bridged, key);
+    }
+
+    (Vec::new(), ANTHROPIC_POOL_KEY.to_string())
 }
 
 /// `POST /v1/messages` and `POST /v1/messages/count_tokens`.
@@ -490,7 +538,7 @@ pub async fn proxy_anthropic(
             &req_headers,
             body_bytes,
             &pool_accounts,
-            pool_key,
+            &pool_key,
         )
         .await;
     }
@@ -502,10 +550,10 @@ pub async fn proxy_anthropic(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             AppError::Upstream(
-                "no anthropic accounts in pool and TAGW_UPSTREAM not configured".into(),
+                "no anthropic accounts in pool (and no GLM Anthropic bridge) and TAGW_UPSTREAM not configured".into(),
             )
         })?;
-    let url = format!("{}{}", base.trim_end_matches('/'), path_and_query);
+    let url = crate::proxy::url::join_upstream_url_owned(base, &path_and_query);
     let headers = build_upstream_headers(&req_headers, None, state.upstream_auth.as_deref())?;
     let upstream_res =
         send_upstream(&state.http_client, &method, &url, &headers, body_bytes).await?;
@@ -580,11 +628,7 @@ async fn proxy_with_router(
             break;
         }
 
-        let url = format!(
-            "{}{}",
-            account.upstream_base.trim_end_matches('/'),
-            path_and_query
-        );
+        let url = crate::proxy::url::join_upstream_url_owned(&account.upstream_base, path_and_query);
         let headers = match build_upstream_headers(req_headers, Some(&account), None) {
             Ok(h) => h,
             Err(e) => {

@@ -3,3 +3,4 @@
 pub mod anthropic;
 pub mod openai;
 pub mod stream;
+pub mod url;

@@ -430,7 +430,7 @@ pub async fn proxy_openai(
                 "no openai-compat accounts in pool and TAGW_UPSTREAM not configured".into(),
             )
         })?;
-    let url = format!("{}{}", base.trim_end_matches('/'), path_and_query);
+    let url = crate::proxy::url::join_upstream_url_owned(base, &path_and_query);
     let headers = build_upstream_headers(&req_headers, state.upstream_auth.as_deref())?;
     let upstream_res =
         send_upstream(&state.http_client, &method, &url, &headers, body_bytes).await?;
@@ -532,11 +532,7 @@ async fn proxy_with_router(
             break;
         }
 
-        let url = format!(
-            "{}{}",
-            account.upstream_base.trim_end_matches('/'),
-            path_and_query
-        );
+        let url = crate::proxy::url::join_upstream_url_owned(&account.upstream_base, path_and_query);
         let headers = match build_upstream_headers(req_headers, Some(&account.auth_header)) {
             Ok(h) => h,
             Err(e) => {
