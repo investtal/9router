@@ -41,13 +41,15 @@ impl ConfigCache {
         }
     }
 
-    /// Load active member keys and API-key account pools from SQLite into the cache.
+    /// Load active member keys and account pools (api_key + oauth) from SQLite.
     pub fn load(&self, db: &Db) -> Result<()> {
         let rows = load_active_keys(db).context("config cache load keys")?;
         self.replace_keys(rows);
-        let pools = crate::providers::api_key::load_account_pools(db)
-            .context("config cache load account pools")?;
-        self.replace_account_pools(pools);
+        let api_pools = crate::providers::api_key::load_account_pools(db)
+            .context("config cache load api_key account pools")?;
+        let oauth_pools = crate::oauth::load_oauth_account_pools(db)
+            .context("config cache load oauth account pools")?;
+        self.replace_account_pools(crate::oauth::merge_account_pools(api_pools, oauth_pools));
         Ok(())
     }
 

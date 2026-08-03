@@ -7,6 +7,8 @@ pub struct Config {
     pub upstream: Option<String>,
     /// Optional `Authorization` header value sent to the upstream (e.g. `Bearer sk-...`).
     pub upstream_auth: Option<String>,
+    /// Public base URL for OAuth `redirect_uri` construction (e.g. `http://127.0.0.1:20128`).
+    pub public_base: Option<String>,
 }
 
 impl Config {
@@ -18,6 +20,9 @@ impl Config {
                 .unwrap_or_else(|_| "./data".into()),
             upstream: std::env::var("TAGW_UPSTREAM").ok().filter(|s| !s.is_empty()),
             upstream_auth: std::env::var("TAGW_UPSTREAM_AUTH")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            public_base: std::env::var("TAGW_PUBLIC_BASE")
                 .ok()
                 .filter(|s| !s.is_empty()),
         }

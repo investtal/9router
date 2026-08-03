@@ -1,4 +1,7 @@
 //! Provider registry: API-key providers (Task 7) and OAuth (Task 8).
+//!
+//! OAuth connect + refresh lives in [`crate::oauth`]; both kinds feed
+//! [`crate::cache::ConfigCache`] account pools.
 
 pub mod api_key;
 

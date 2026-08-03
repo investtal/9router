@@ -2,6 +2,7 @@ use tagw::app::build_app;
 use tagw::cache::ConfigCache;
 use tagw::config::Config;
 use tagw::db::Db;
+use tagw::oauth::spawn_oauth_refresh_loop;
 use tagw::state::AppState;
 use tagw::usage::{spawn_usage_writer, USAGE_CHANNEL_CAPACITY};
 
@@ -26,6 +27,14 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::warn!("TAGW_UPSTREAM not set; /v1 proxy will return 502 until configured");
     }
+    if let Some(pub_base) = cfg.public_base.clone() {
+        state = state.with_public_base(pub_base);
+    }
+    let _oauth_refresh = spawn_oauth_refresh_loop(
+        state.db.clone(),
+        state.cache.clone(),
+        state.http_client.clone(),
+    );
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("listening on {}", cfg.bind);

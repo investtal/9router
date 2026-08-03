@@ -2,6 +2,7 @@ use axum::routing::{any, get};
 use axum::Router;
 
 use crate::admin;
+use crate::oauth;
 use crate::proxy;
 use crate::state::AppState;
 
@@ -20,6 +21,7 @@ pub fn build_app(state: AppState) -> Router {
         )
         .merge(admin::keys::router())
         .merge(admin::providers::router())
+        .merge(oauth::router())
         // OpenAI-compatible passthrough: POST /v1/chat/completions and other /v1/*
         .route("/v1/{*path}", any(proxy::openai::proxy_openai))
         .with_state(state)
