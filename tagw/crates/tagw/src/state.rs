@@ -12,6 +12,12 @@ pub struct AppState {
     pub cache: ConfigCache,
     /// Non-blocking enqueue for request usage / log rows.
     pub usage_tx: UsageTx,
+    /// Shared HTTP client for upstream proxy calls (connection pooling).
+    pub http_client: reqwest::Client,
+    /// Temporary single upstream base URL (`TAGW_UPSTREAM`). Task 6 replaces with AccountRouter.
+    pub upstream_base: Option<String>,
+    /// Authorization header value for the temporary upstream (`TAGW_UPSTREAM_AUTH`).
+    pub upstream_auth: Option<String>,
 }
 
 impl AppState {
@@ -21,7 +27,17 @@ impl AppState {
             db,
             cache,
             usage_tx,
+            http_client: reqwest::Client::new(),
+            upstream_base: None,
+            upstream_auth: None,
         }
+    }
+
+    /// Attach temporary upstream config (from env or tests).
+    pub fn with_upstream(mut self, base: impl Into<String>, auth: Option<String>) -> Self {
+        self.upstream_base = Some(base.into());
+        self.upstream_auth = auth;
+        self
     }
 
     /// Open a temp DB, migrate, spawn usage writer, load config cache (for integration tests).

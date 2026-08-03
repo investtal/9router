@@ -19,7 +19,13 @@ async fn main() -> anyhow::Result<()> {
     cache.load(&db)?;
     let (usage_tx, usage_rx) = tokio::sync::mpsc::channel(USAGE_CHANNEL_CAPACITY);
     let _usage_writer = spawn_usage_writer(db.clone(), usage_rx);
-    let state = AppState::new(db, cache, usage_tx);
+    let mut state = AppState::new(db, cache, usage_tx);
+    if let Some(base) = cfg.upstream.clone() {
+        state = state.with_upstream(base, cfg.upstream_auth.clone());
+        tracing::info!(upstream = %state.upstream_base.as_deref().unwrap_or(""), "proxy upstream configured");
+    } else {
+        tracing::warn!("TAGW_UPSTREAM not set; /v1 proxy will return 502 until configured");
+    }
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("listening on {}", cfg.bind);

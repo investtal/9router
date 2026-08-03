@@ -2,6 +2,11 @@
 pub struct Config {
     pub bind: String,
     pub data_dir: std::path::PathBuf,
+    /// Temporary single upstream base URL (Task 5). Replaced by AccountRouter in Task 6.
+    /// Example: `http://127.0.0.1:8080` — request path `/v1/...` is appended.
+    pub upstream: Option<String>,
+    /// Optional `Authorization` header value sent to the upstream (e.g. `Bearer sk-...`).
+    pub upstream_auth: Option<String>,
 }
 
 impl Config {
@@ -11,6 +16,10 @@ impl Config {
             data_dir: std::env::var("TAGW_DATA_DIR")
                 .map(Into::into)
                 .unwrap_or_else(|_| "./data".into()),
+            upstream: std::env::var("TAGW_UPSTREAM").ok().filter(|s| !s.is_empty()),
+            upstream_auth: std::env::var("TAGW_UPSTREAM_AUTH")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
