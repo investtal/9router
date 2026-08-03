@@ -6,14 +6,17 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-const NAV = [
+type NavItem = { to: string; label: string; adminOnly?: boolean; hideForViewer?: boolean };
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Overview' },
   { to: '/usage', label: 'Usage' },
   { to: '/members', label: 'Members' },
   { to: '/providers', label: 'Providers' },
   { to: '/logs', label: 'Logs' },
-  { to: '/admin/keys', label: 'Admin keys' },
-] as const;
+  { to: '/admin/keys', label: 'Admin keys', adminOnly: true, hideForViewer: true },
+  { to: '/admin/export', label: 'Export', adminOnly: true },
+];
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -68,11 +71,18 @@ function RootLayout() {
     return null;
   }
 
+  const isAdmin = user.role === 'admin';
+  const visibleNav = NAV.filter((item) => {
+    if (item.adminOnly && !isAdmin) return false;
+    if (item.hideForViewer && user.role === 'viewer') return false;
+    return true;
+  });
+
   return (
     <div className="layout">
       <nav className="nav">
         <div className="brand">TAGW</div>
-        {NAV.map((item) => (
+        {visibleNav.map((item) => (
           <Link
             key={item.to}
             to={item.to}

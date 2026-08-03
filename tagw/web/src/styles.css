@@ -254,3 +254,29 @@ button:disabled {
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+.btn-link {
+  display: inline-block;
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff !important;
+  text-decoration: none !important;
+  border: 1px solid transparent;
+}
+
+.btn-link:hover {
+  filter: brightness(1.08);
+  text-decoration: none !important;
+}
+
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: #121a26;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  resize: vertical;
+}

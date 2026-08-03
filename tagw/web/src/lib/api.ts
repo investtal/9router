@@ -4,6 +4,21 @@ export type Range = 'today' | '3d' | '7d' | '30d' | '90d';
 
 export const RANGES: Range[] = ['today', '3d', '7d', '30d', '90d'];
 
+export const API_KEY_PROVIDER_TYPES = [
+  'glm',
+  'open_model',
+  'alibaba',
+  'anthropic',
+  'minimax',
+  'kimi',
+  'deepseek',
+  'openai_compat',
+] as const;
+
+export type ApiKeyProviderType = (typeof API_KEY_PROVIDER_TYPES)[number];
+
+export const OAUTH_PROVIDERS = ['codex', 'claude', 'xai', 'kimi', 'antigravity'] as const;
+
 export type DashboardUser = {
   id: string;
   username: string;
@@ -103,6 +118,61 @@ export type LiveEvent = {
   model: string | null;
 };
 
+export type CreateProviderInput = {
+  provider_type: string;
+  name: string;
+  enabled?: boolean;
+};
+
+export type CreateAccountInput = {
+  label: string;
+  api_key: string;
+  base_url?: string | null;
+  models?: string[] | null;
+  enabled?: boolean;
+};
+
+export type OAuthStartResponse = {
+  provider: string;
+  authorize_url: string;
+  state: string;
+  redirect_uri: string;
+};
+
+export type ExportBundle = {
+  version: number;
+  exported_at: string;
+  providers: unknown[];
+  accounts: unknown[];
+  users: unknown[];
+  member_api_keys: unknown[];
+  settings: unknown;
+  include_request_logs?: boolean;
+  request_logs?: unknown[];
+};
+
+export type ImportResult = {
+  providers: number;
+  accounts: number;
+  users: number;
+  member_api_keys: number;
+  settings: number;
+  request_logs: number;
+};
+
+export type UserPublic = {
+  id: string;
+  username: string;
+  role: 'viewer' | 'admin';
+  created_at: string;
+};
+
+export type CreateUserInput = {
+  username: string;
+  password: string;
+  role?: 'viewer' | 'admin';
+};
+
 export function rangeQuery(range: Range): string {
   return `range=${encodeURIComponent(range)}`;
 }
@@ -165,6 +235,89 @@ export async function fetchMembers(range: Range): Promise<MemberModelCell[]> {
 
 export async function fetchProviders(): Promise<ProviderPublic[]> {
   return apiFetch<ProviderPublic[]>('/api/providers');
+}
+
+export async function createProvider(input: CreateProviderInput): Promise<ProviderPublic> {
+  return apiFetch<ProviderPublic>('/api/admin/providers', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function patchProvider(
+  id: string,
+  enabled: boolean,
+): Promise<{ id: string; enabled: boolean }> {
+  return apiFetch(`/api/admin/providers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function createAccount(
+  providerId: string,
+  input: CreateAccountInput,
+): Promise<AccountPublic> {
+  return apiFetch<AccountPublic>(
+    `/api/admin/providers/${encodeURIComponent(providerId)}/accounts`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function patchAccount(
+  providerId: string,
+  accountId: string,
+  enabled: boolean,
+): Promise<{ id: string; provider_id: string; enabled: boolean }> {
+  return apiFetch(
+    `/api/admin/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    },
+  );
+}
+
+/** Fetch OAuth authorize URL (JSON; does not auto-redirect). */
+export async function startOAuth(provider: string): Promise<OAuthStartResponse> {
+  return apiFetch<OAuthStartResponse>(
+    `/api/oauth/${encodeURIComponent(provider)}/start?redirect=false`,
+  );
+}
+
+/** Browser navigation URL that 302s to the IdP (session cookie sent). */
+export function oauthStartUrl(provider: string): string {
+  return `/api/oauth/${encodeURIComponent(provider)}/start`;
+}
+
+export async function exportBundle(): Promise<ExportBundle> {
+  return apiFetch<ExportBundle>('/api/admin/export/bundle');
+}
+
+export async function importBundle(bundle: unknown): Promise<ImportResult> {
+  return apiFetch<ImportResult>('/api/admin/import/bundle', {
+    method: 'POST',
+    body: JSON.stringify(bundle),
+  });
+}
+
+/** Same-origin DB file download (uses session cookie via navigation / anchor). */
+export function exportDbUrl(): string {
+  return '/api/admin/export/db';
+}
+
+export async function listUsers(): Promise<UserPublic[]> {
+  return apiFetch<UserPublic[]>('/api/admin/users');
+}
+
+export async function createUser(input: CreateUserInput): Promise<UserPublic> {
+  return apiFetch<UserPublic>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export async function fetchAdminKeys(): Promise<MemberApiKeyPublic[]> {

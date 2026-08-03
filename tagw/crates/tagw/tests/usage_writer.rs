@@ -59,7 +59,8 @@ async fn usage_writer_batches_100_events() {
 }
 
 #[tokio::test]
-async fn estimate_cost_placeholder_is_zero() {
+async fn estimate_cost_known_model_is_nonzero() {
     let c = tagw::usage::estimate_cost(Some("gpt-4o"), 100, 50, 10);
-    assert_eq!(c, 0.0);
+    assert!(c > 0.0, "gpt-4o cost table must produce a positive estimate, got {c}");
+    assert_eq!(tagw::usage::estimate_cost(Some("unknown-xyz"), 100, 50, 0), 0.0);
 }
