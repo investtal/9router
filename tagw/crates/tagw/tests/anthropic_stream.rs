@@ -19,7 +19,7 @@ use tagw::providers::api_key::{
     create_account, create_provider, CreateAccountRequest, CreateProviderRequest,
 };
 use tagw::router::AccountRef;
-use tagw::state::{AppState, ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
+use tagw::state::{AppState, ANTHROPIC_POOL_KEY, OPENAI_COMPAT_POOL_KEY};
 use tower::ServiceExt;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -266,8 +266,8 @@ async fn messages_prefers_anthropic_pool_account() {
             enabled: true,
         }],
     );
-    // Default pool empty — anthropic pool must be enough.
-    assert!(state.cache.enabled_accounts(DEFAULT_POOL_KEY).is_empty());
+    // OpenAI-compat pool empty — anthropic pool must be enough on its own.
+    assert!(state.cache.enabled_accounts(OPENAI_COMPAT_POOL_KEY).is_empty());
     assert_eq!(state.cache.enabled_accounts(ANTHROPIC_POOL_KEY).len(), 1);
 
     let (row, plaintext) = create_member_key(&state.db, "pool-user").unwrap();
@@ -346,10 +346,10 @@ async fn anthropic_provider_loads_into_anthropic_pool() {
     assert!(
         state
             .cache
-            .enabled_accounts(DEFAULT_POOL_KEY)
+            .enabled_accounts(OPENAI_COMPAT_POOL_KEY)
             .iter()
-            .any(|a| a.account_id == ant[0].account_id),
-        "also in default pool"
+            .all(|a| a.account_id != ant[0].account_id),
+        "anthropic accounts must not join openai_compat pool"
     );
 
     let (row, plaintext) = create_member_key(&state.db, "ant-crud-user").unwrap();

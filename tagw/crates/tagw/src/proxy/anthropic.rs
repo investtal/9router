@@ -1,8 +1,9 @@
 //! Anthropic Messages API path for Claude Code (`POST /v1/messages`).
 //!
 //! Auth: Bearer member key **preferred**, or Anthropic-style `x-api-key` with the
-//! same member key. Upstream credentials come from AccountRouter (prefer
-//! [`crate::state::ANTHROPIC_POOL_KEY`], else default pool, else `TAGW_UPSTREAM`).
+//! same member key. Upstream credentials come from AccountRouter over
+//! [`crate::state::ANTHROPIC_POOL_KEY`] only (else `TAGW_UPSTREAM`). OpenAI-compat
+//! accounts (glm/deepseek/…) are never selected on this path.
 //!
 //! Same fail-over + OAuth ensure + UsageEvent rules as the OpenAI path.
 
@@ -20,7 +21,7 @@ use crate::error::AppError;
 use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
 use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
-use crate::state::{AppState, ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
+use crate::state::{AppState, ANTHROPIC_POOL_KEY};
 use crate::usage::{estimate_cost, UsageEvent};
 
 const LINE_BUF_MAX: usize = 256 * 1024;
@@ -449,14 +450,12 @@ fn stream_upstream_response(
     response
 }
 
-/// Resolve accounts: anthropic pool → default pool → empty (caller uses TAGW_UPSTREAM).
+/// Resolve accounts: anthropic pool only → empty (caller uses TAGW_UPSTREAM).
+///
+/// Never falls back to the OpenAI-compat pool (would send Messages traffic to glm/etc.).
 fn resolve_accounts(state: &AppState) -> (Vec<AccountRef>, &'static str) {
     let anthropic = state.cache.enabled_accounts(ANTHROPIC_POOL_KEY);
-    if !anthropic.is_empty() {
-        return (anthropic, ANTHROPIC_POOL_KEY);
-    }
-    let default = state.cache.enabled_accounts(DEFAULT_POOL_KEY);
-    (default, DEFAULT_POOL_KEY)
+    (anthropic, ANTHROPIC_POOL_KEY)
 }
 
 /// `POST /v1/messages` and `POST /v1/messages/count_tokens`.
@@ -503,7 +502,7 @@ pub async fn proxy_anthropic(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             AppError::Upstream(
-                "no anthropic/default accounts in pool and TAGW_UPSTREAM not configured".into(),
+                "no anthropic accounts in pool and TAGW_UPSTREAM not configured".into(),
             )
         })?;
     let url = format!("{}{}", base.trim_end_matches('/'), path_and_query);

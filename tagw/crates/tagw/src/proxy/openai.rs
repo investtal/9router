@@ -1,7 +1,8 @@
 //! OpenAI-compatible `/v1/*` reverse proxy with streaming passthrough.
 //!
-//! Account selection via [`AccountRouter`] (round-robin + fail-over). When the
-//! account pool is empty, falls back to `TAGW_UPSTREAM` (dev).
+//! Account selection via [`AccountRouter`] over [`crate::state::OPENAI_COMPAT_POOL_KEY`]
+//! (round-robin + fail-over). When that pool is empty, falls back to `TAGW_UPSTREAM` (dev).
+//! Anthropic/Claude accounts are **not** in this pool — use `/v1/messages`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -17,7 +18,7 @@ use crate::error::AppError;
 use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
 use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
-use crate::state::{AppState, DEFAULT_POOL_KEY};
+use crate::state::{AppState, OPENAI_COMPAT_POOL_KEY};
 use crate::usage::{estimate_cost, UsageEvent};
 
 /// Max side-channel line buffer for usage parse. Cap prevents unbounded hold of
@@ -398,7 +399,7 @@ pub async fn proxy_openai(
         .await
         .map_err(|e| AppError::BadRequest(format!("request body: {e}")))?;
 
-    let pool_accounts = state.cache.enabled_accounts(DEFAULT_POOL_KEY);
+    let pool_accounts = state.cache.enabled_accounts(OPENAI_COMPAT_POOL_KEY);
 
     if !pool_accounts.is_empty() {
         return proxy_with_router(
@@ -414,14 +415,14 @@ pub async fn proxy_openai(
         .await;
     }
 
-    // Dev fallback: pure TAGW_UPSTREAM when pool is empty.
+    // Dev fallback: pure TAGW_UPSTREAM when openai_compat pool is empty.
     let base = state
         .upstream_base
         .as_ref()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             AppError::Upstream(
-                "no accounts in pool and TAGW_UPSTREAM not configured".into(),
+                "no openai-compat accounts in pool and TAGW_UPSTREAM not configured".into(),
             )
         })?;
     let url = format!("{}{}", base.trim_end_matches('/'), path_and_query);
@@ -491,7 +492,10 @@ async fn proxy_with_router(
     let mut last_account: Option<AccountRef> = None;
 
     for attempt in 0..MAX_FAILOVER_ATTEMPTS {
-        let Some(mut account) = state.account_router.pick(DEFAULT_POOL_KEY, accounts) else {
+        let Some(mut account) = state
+            .account_router
+            .pick(OPENAI_COMPAT_POOL_KEY, accounts)
+        else {
             break;
         };
 

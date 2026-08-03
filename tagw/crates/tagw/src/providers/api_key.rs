@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::cache::CachedAccount;
 use crate::db::Db;
 use crate::router::AccountRef;
-use crate::state::{ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
+use crate::state::{ANTHROPIC_POOL_KEY, OPENAI_COMPAT_POOL_KEY};
 
 /// Supported API-key provider type strings (schema + admin API).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +76,12 @@ impl ApiKeyProviderType {
             Self::Deepseek => Some("https://api.deepseek.com"),
             Self::OpenaiCompat => None,
         }
+    }
+
+    /// Whether this API-key type speaks OpenAI chat/completions wire format.
+    /// Anthropic uses `/v1/messages` and stays on [`ANTHROPIC_POOL_KEY`] only.
+    pub fn is_openai_compat_wire(self) -> bool {
+        !matches!(self, Self::Anthropic)
     }
 }
 
@@ -437,10 +443,11 @@ pub fn set_account_enabled(
 /// Load API-key accounts into routing pools.
 ///
 /// - One pool per `provider_id` (enabled accounts only when both provider+account enabled)
-/// - Plus [`DEFAULT_POOL_KEY`] containing all enabled accounts (proxy uses this until model→pool mapping)
+/// - [`OPENAI_COMPAT_POOL_KEY`]: OpenAI-wire enabled accounts (OpenAI proxy RR)
+/// - [`ANTHROPIC_POOL_KEY`]: Anthropic-wire enabled accounts (Messages proxy RR)
 ///
 /// Disabled providers or accounts appear with `enabled: false` only in provider-id pools so
-/// diagnostics can still see them; they are **not** added to the default pool as enabled.
+/// diagnostics can still see them; they are **not** added to synthetic RR pools as enabled.
 pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>> {
     let rows = db
         .with_conn(|conn| {
@@ -469,7 +476,7 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
         .context("load api_key accounts for pools")?;
 
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
-    let mut default_pool: Vec<CachedAccount> = Vec::new();
+    let mut openai_compat_pool: Vec<CachedAccount> = Vec::new();
     let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type_str) in rows
@@ -524,16 +531,17 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
             .or_default()
             .push(cached.clone());
 
-        // Default pool: only effectively enabled accounts (proxy RR).
+        // Synthetic RR pools: only effectively enabled accounts, split by wire format.
         if enabled {
-            default_pool.push(cached.clone());
-            if provider_type == ApiKeyProviderType::Anthropic {
+            if provider_type.is_openai_compat_wire() {
+                openai_compat_pool.push(cached);
+            } else if provider_type == ApiKeyProviderType::Anthropic {
                 anthropic_pool.push(cached);
             }
         }
     }
 
-    by_provider.insert(DEFAULT_POOL_KEY.to_string(), default_pool);
+    by_provider.insert(OPENAI_COMPAT_POOL_KEY.to_string(), openai_compat_pool);
     by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
     Ok(by_provider)
 }
@@ -579,6 +587,14 @@ mod tests {
     fn openai_compat_requires_base_url_default_none() {
         assert!(ApiKeyProviderType::OpenaiCompat.default_base_url().is_none());
         assert!(ApiKeyProviderType::Deepseek.default_base_url().is_some());
+    }
+
+    #[test]
+    fn anthropic_is_not_openai_compat_wire() {
+        assert!(!ApiKeyProviderType::Anthropic.is_openai_compat_wire());
+        assert!(ApiKeyProviderType::Glm.is_openai_compat_wire());
+        assert!(ApiKeyProviderType::Deepseek.is_openai_compat_wire());
+        assert!(ApiKeyProviderType::OpenaiCompat.is_openai_compat_wire());
     }
 
     #[test]

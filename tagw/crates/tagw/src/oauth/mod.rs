@@ -30,7 +30,7 @@ use crate::cache::{CachedAccount, ConfigCache};
 use crate::db::Db;
 use crate::error::AppError;
 use crate::router::AccountRef;
-use crate::state::{AppState, ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
+use crate::state::{AppState, ANTHROPIC_POOL_KEY, OPENAI_COMPAT_POOL_KEY};
 
 pub use refresh::{
     ensure_access_token, ensure_access_token_with_client, provider_by_id, spawn_oauth_refresh_loop,
@@ -310,6 +310,12 @@ pub fn insert_oauth_account(
 /// Load oauth accounts into routing pools (Bearer access_token).
 ///
 /// Merges cleanly with api_key pools via [`merge_account_pools`].
+///
+/// Synthetic pools (enabled only):
+/// - [`OPENAI_COMPAT_POOL_KEY`]: OpenAI-shaped OAuth (`codex`, `xai`, `kimi`)
+/// - [`ANTHROPIC_POOL_KEY`]: Claude OAuth (Anthropic Messages wire)
+///
+/// Other OAuth types (e.g. `antigravity`) stay on per-`provider_id` pools only.
 pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<CachedAccount>>> {
     let rows = db.with_conn(|conn| {
         let mut stmt = conn.prepare(
@@ -336,7 +342,7 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
     })?;
 
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
-    let mut default_pool: Vec<CachedAccount> = Vec::new();
+    let mut openai_compat_pool: Vec<CachedAccount> = Vec::new();
     let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type) in rows {
@@ -387,16 +393,23 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
             .or_default()
             .push(cached.clone());
         if enabled {
-            default_pool.push(cached.clone());
-            // Claude OAuth is Anthropic Messages-compatible.
-            if provider_type == "claude" {
+            if is_openai_oauth_type(&provider_type) {
+                openai_compat_pool.push(cached);
+            } else if provider_type == "claude" {
+                // Claude OAuth is Anthropic Messages-compatible only.
                 anthropic_pool.push(cached);
             }
+            // antigravity and unknown types: provider_id pool only.
         }
     }
-    by_provider.insert(DEFAULT_POOL_KEY.to_string(), default_pool);
+    by_provider.insert(OPENAI_COMPAT_POOL_KEY.to_string(), openai_compat_pool);
     by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
     Ok(by_provider)
+}
+
+/// OAuth provider_types that speak OpenAI chat/completions wire format.
+fn is_openai_oauth_type(provider_type: &str) -> bool {
+    matches!(provider_type, "codex" | "xai" | "kimi")
 }
 
 fn default_base_for_type(provider_type: &str) -> Option<&'static str> {

@@ -10,8 +10,15 @@ use crate::oauth::refresh::PendingMap;
 use crate::router::AccountRouter;
 use crate::usage::{spawn_usage_writer, UsageTx, USAGE_CHANNEL_CAPACITY};
 
-/// Default routing pool key until model→provider mapping lands (Task 7+).
-pub const DEFAULT_POOL_KEY: &str = "default";
+/// Round-robin pool for OpenAI-compatible `/v1/*` (chat completions, etc.).
+///
+/// Populated from OpenAI-shaped API-key providers (`glm`, `open_model`, `alibaba`,
+/// `minimax`, `kimi`, `deepseek`, `openai_compat`) and OAuth types (`codex`, `xai`,
+/// `kimi`). Does **not** include Anthropic/Claude accounts.
+pub const OPENAI_COMPAT_POOL_KEY: &str = "openai_compat";
+
+/// Historical alias for [`OPENAI_COMPAT_POOL_KEY`] (OpenAI chat RR set only — not all accounts).
+pub const DEFAULT_POOL_KEY: &str = OPENAI_COMPAT_POOL_KEY;
 
 /// Prefer this pool for Anthropic Messages (`/v1/messages`) when non-empty.
 /// Populated from `provider_type=anthropic` (api_key) and `claude` (oauth) accounts.
