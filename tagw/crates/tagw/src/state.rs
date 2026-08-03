@@ -3,7 +3,11 @@ use std::sync::Arc;
 
 use crate::cache::ConfigCache;
 use crate::db::Db;
+use crate::router::AccountRouter;
 use crate::usage::{spawn_usage_writer, UsageTx, USAGE_CHANNEL_CAPACITY};
+
+/// Default routing pool key until model→provider mapping lands (Task 7+).
+pub const DEFAULT_POOL_KEY: &str = "default";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,9 +18,11 @@ pub struct AppState {
     pub usage_tx: UsageTx,
     /// Shared HTTP client for upstream proxy calls (connection pooling).
     pub http_client: reqwest::Client,
-    /// Temporary single upstream base URL (`TAGW_UPSTREAM`). Task 6 replaces with AccountRouter.
+    /// Round-robin + fail-over account selection (shared cursors across clones).
+    pub account_router: AccountRouter,
+    /// Dev fallback upstream base URL (`TAGW_UPSTREAM`) when the account pool is empty.
     pub upstream_base: Option<String>,
-    /// Authorization header value for the temporary upstream (`TAGW_UPSTREAM_AUTH`).
+    /// Authorization header value for the dev fallback upstream (`TAGW_UPSTREAM_AUTH`).
     pub upstream_auth: Option<String>,
 }
 
@@ -28,12 +34,14 @@ impl AppState {
             cache,
             usage_tx,
             http_client: reqwest::Client::new(),
+            account_router: AccountRouter::new(),
             upstream_base: None,
             upstream_auth: None,
         }
     }
 
-    /// Attach temporary upstream config (from env or tests).
+    /// Attach dev fallback upstream config (from env or tests). Used when the
+    /// account pool is empty.
     pub fn with_upstream(mut self, base: impl Into<String>, auth: Option<String>) -> Self {
         self.upstream_base = Some(base.into());
         self.upstream_auth = auth;

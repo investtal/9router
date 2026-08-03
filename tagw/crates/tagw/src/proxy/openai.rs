@@ -1,6 +1,7 @@
 //! OpenAI-compatible `/v1/*` reverse proxy with streaming passthrough.
 //!
-//! Temporary single upstream from `AppState.upstream_*` (Task 5). AccountRouter is Task 6.
+//! Account selection via [`AccountRouter`] (round-robin + fail-over). When the
+//! account pool is empty, falls back to `TAGW_UPSTREAM` (dev).
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -10,17 +11,20 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use bytes::Bytes;
-use futures_util::StreamExt;
 
 use crate::auth::member_key::MemberContext;
 use crate::error::AppError;
 use crate::proxy::stream::forward_io_stream;
-use crate::state::AppState;
+use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
+use crate::state::{AppState, DEFAULT_POOL_KEY};
 use crate::usage::{estimate_cost, UsageEvent};
 
 /// Max side-channel line buffer for usage parse. Cap prevents unbounded hold of
 /// body-ish data when upstream never sends a newline (client stream is unaffected).
 const LINE_BUF_MAX: usize = 256 * 1024;
+
+/// Max request body collected for fail-over retries (LLM JSON; not the response stream).
+const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 
 /// Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1).
 fn is_hop_by_hop(name: &str) -> bool {
@@ -128,6 +132,8 @@ struct StreamMetrics {
     usage_incomplete: bool,
     error: Option<String>,
     line_buf: String,
+    provider_id: Option<String>,
+    account_id: Option<String>,
 }
 
 impl StreamMetrics {
@@ -144,7 +150,15 @@ impl StreamMetrics {
             usage_incomplete: true,
             error: None,
             line_buf: String::new(),
+            provider_id: None,
+            account_id: None,
         }
+    }
+
+    fn with_account(mut self, account: &AccountRef) -> Self {
+        self.provider_id = Some(account.provider_id.clone());
+        self.account_id = Some(account.account_id.clone());
+        self
     }
 
     fn on_bytes(&mut self, chunk: &Bytes) {
@@ -211,8 +225,8 @@ impl StreamMetrics {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             member_key_id: Some(self.member_key_id),
-            provider_id: None,
-            account_id: None,
+            provider_id: self.provider_id,
+            account_id: self.account_id,
             model: self.model,
             tool: Some("openai".into()),
             status: Some(self.status as i32),
@@ -250,34 +264,13 @@ impl Drop for UsageOnComplete {
     }
 }
 
-/// Catch-all OpenAI-compatible proxy for `/v1/*`.
-pub async fn proxy_openai(
-    State(state): State<AppState>,
-    req: Request<Body>,
-) -> Result<Response, AppError> {
-    let member = authenticate(&state, req.headers())?;
-    // latency_ms / ttft_ms are measured from after auth (proxy hop + upstream).
-    let start = Instant::now();
-
-    let upstream_base = state
-        .upstream_base
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Upstream("TAGW_UPSTREAM not configured".into()))?;
-
-    let method = req.method().clone();
-    let path_and_query = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or_else(|| req.uri().path());
-
-    let base = upstream_base.trim_end_matches('/');
-    let url = format!("{base}{path_and_query}");
-
-    // Build upstream request headers: forward most, strip hop-by-hop, set upstream auth.
+/// Build hop-by-hop-stripped headers for upstream; set Authorization from target.
+fn build_upstream_headers(
+    req_headers: &HeaderMap,
+    auth: Option<&str>,
+) -> Result<HeaderMap, AppError> {
     let mut out_headers = HeaderMap::new();
-    for (name, value) in req.headers().iter() {
+    for (name, value) in req_headers.iter() {
         if is_hop_by_hop(name.as_str()) {
             continue;
         }
@@ -287,48 +280,44 @@ pub async fn proxy_openai(
         }
         out_headers.insert(name.clone(), value.clone());
     }
-    if let Some(auth) = state.upstream_auth.as_ref() {
+    if let Some(auth) = auth {
         if !auth.is_empty() {
             let hv = HeaderValue::from_str(auth)
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid upstream auth: {e}")))?;
             out_headers.insert(header::AUTHORIZATION, hv);
         }
     }
+    Ok(out_headers)
+}
 
-    // Stream request body to upstream (no full-body collect).
-    let req_body = req.into_body();
-    let body_stream = req_body.into_data_stream().map(|r| {
-        r.map_err(|e| std::io::Error::other(format!("request body stream error: {e}")))
-    });
-    let upstream_body = reqwest::Body::wrap_stream(body_stream);
-
-    let client = state.http_client.clone();
+async fn send_upstream(
+    client: &reqwest::Client,
+    method: &Method,
+    url: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<reqwest::Response, AppError> {
     let mut builder = client.request(
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST),
-        &url,
+        url,
     );
-    for (name, value) in out_headers.iter() {
+    for (name, value) in headers.iter() {
         if let Ok(v) = value.to_str() {
             builder = builder.header(name.as_str(), v);
         }
     }
-    // Empty GET/HEAD bodies are fine with wrap_stream of empty stream.
     if method != Method::GET && method != Method::HEAD {
-        builder = builder.body(upstream_body);
+        builder = builder.body(body);
     }
-
-    let upstream_res = builder
+    builder
         .send()
         .await
-        .map_err(|e| AppError::Upstream(format!("upstream request failed: {e}")))?;
+        .map_err(|e| AppError::Upstream(format!("upstream request failed: {e}")))
+}
 
-    let status =
-        StatusCode::from_u16(upstream_res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let status_u16 = status.as_u16();
-
-    // Copy response headers (strip hop-by-hop).
+fn copy_response_headers(upstream: &reqwest::Response) -> HeaderMap {
     let mut res_headers = HeaderMap::new();
-    for (name, value) in upstream_res.headers().iter() {
+    for (name, value) in upstream.headers().iter() {
         if is_hop_by_hop(name.as_str()) {
             continue;
         }
@@ -338,28 +327,211 @@ pub async fn proxy_openai(
             }
         }
     }
+    res_headers
+}
 
-    let metrics = Arc::new(Mutex::new(Some(StreamMetrics::new(
-        member.key_id.clone(),
-        status_u16,
-        start,
-    ))));
+/// Build a streaming client response from a successful upstream response.
+fn stream_upstream_response(
+    state: &AppState,
+    member: &MemberContext,
+    start: Instant,
+    upstream_res: reqwest::Response,
+    account: Option<&AccountRef>,
+) -> Response {
+    let status =
+        StatusCode::from_u16(upstream_res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status_u16 = status.as_u16();
+    let res_headers = copy_response_headers(&upstream_res);
+
+    let mut metrics = StreamMetrics::new(member.key_id.clone(), status_u16, start);
+    if let Some(a) = account {
+        metrics = metrics.with_account(a);
+    }
+    let metrics = Arc::new(Mutex::new(Some(metrics)));
     let metrics_for_stream = Arc::clone(&metrics);
-    let _usage_guard = UsageOnComplete {
+    let usage_guard = UsageOnComplete {
         metrics,
         usage_tx: state.usage_tx.clone(),
     };
-    // Keep guard alive for the lifetime of the body stream by moving into the stream.
-    let usage_guard = _usage_guard;
 
     // CRITICAL: use bytes_stream() — never response.bytes().await on the stream path.
+    // After first byte is forwarded there is no account switch (fail-over only pre-body).
     let byte_stream = upstream_res.bytes_stream();
     let client_stream = async_stream_map(byte_stream, metrics_for_stream, usage_guard);
 
     let mut response = Response::new(forward_io_stream(client_stream));
     *response.status_mut() = status;
     *response.headers_mut() = res_headers;
-    Ok(response)
+    response
+}
+
+/// Catch-all OpenAI-compatible proxy for `/v1/*`.
+pub async fn proxy_openai(
+    State(state): State<AppState>,
+    req: Request<Body>,
+) -> Result<Response, AppError> {
+    let member = authenticate(&state, req.headers())?;
+    // latency_ms / ttft_ms are measured from after auth (proxy hop + upstream).
+    let start = Instant::now();
+
+    let method = req.method().clone();
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+
+    // Collect request body once so fail-over can re-send (response path still streams).
+    let req_headers = req.headers().clone();
+    let body_bytes = axum::body::to_bytes(req.into_body(), MAX_REQUEST_BODY)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("request body: {e}")))?;
+
+    let pool_accounts = state.cache.enabled_accounts(DEFAULT_POOL_KEY);
+
+    if !pool_accounts.is_empty() {
+        return proxy_with_router(
+            &state,
+            &member,
+            start,
+            &method,
+            &path_and_query,
+            &req_headers,
+            body_bytes,
+            &pool_accounts,
+        )
+        .await;
+    }
+
+    // Dev fallback: pure TAGW_UPSTREAM when pool is empty.
+    let base = state
+        .upstream_base
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::Upstream(
+                "no accounts in pool and TAGW_UPSTREAM not configured".into(),
+            )
+        })?;
+    let url = format!("{}{}", base.trim_end_matches('/'), path_and_query);
+    let headers = build_upstream_headers(&req_headers, state.upstream_auth.as_deref())?;
+    let upstream_res =
+        send_upstream(&state.http_client, &method, &url, &headers, body_bytes).await?;
+    Ok(stream_upstream_response(
+        &state,
+        &member,
+        start,
+        upstream_res,
+        None,
+    ))
+}
+
+/// Round-robin pick + fail-over loop (status check before any client body byte).
+async fn proxy_with_router(
+    state: &AppState,
+    member: &MemberContext,
+    start: Instant,
+    method: &Method,
+    path_and_query: &str,
+    req_headers: &HeaderMap,
+    body_bytes: Bytes,
+    accounts: &[AccountRef],
+) -> Result<Response, AppError> {
+    let mut last_error: Option<AppError> = None;
+    let mut last_failover_response: Option<reqwest::Response> = None;
+    let mut last_account: Option<AccountRef> = None;
+
+    for attempt in 0..MAX_FAILOVER_ATTEMPTS {
+        let Some(account) = state.account_router.pick(DEFAULT_POOL_KEY, accounts) else {
+            break;
+        };
+        let url = format!(
+            "{}{}",
+            account.upstream_base.trim_end_matches('/'),
+            path_and_query
+        );
+        let headers = match build_upstream_headers(req_headers, Some(&account.auth_header)) {
+            Ok(h) => h,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+
+        tracing::debug!(
+            attempt,
+            account_id = %account.account_id,
+            url = %url,
+            "proxy attempt"
+        );
+
+        match send_upstream(
+            &state.http_client,
+            method,
+            &url,
+            &headers,
+            body_bytes.clone(),
+        )
+        .await
+        {
+            Ok(upstream_res) => {
+                let status_u16 = upstream_res.status().as_u16();
+                let can_retry = attempt + 1 < MAX_FAILOVER_ATTEMPTS
+                    && AccountRouter::should_failover(status_u16);
+                if can_retry {
+                    tracing::info!(
+                        attempt,
+                        status = status_u16,
+                        account_id = %account.account_id,
+                        "upstream fail-over status before first byte; trying next account"
+                    );
+                    // Drop response without forwarding any bytes to the client.
+                    last_failover_response = Some(upstream_res);
+                    last_account = Some(account);
+                    continue;
+                }
+                // Forward: either success, non-failover error, or attempts exhausted.
+                // After this point first client body byte commits us to this upstream.
+                return Ok(stream_upstream_response(
+                    state,
+                    member,
+                    start,
+                    upstream_res,
+                    Some(&account),
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    attempt,
+                    account_id = %account.account_id,
+                    error = %e,
+                    "upstream transport error"
+                );
+                last_error = Some(e);
+                last_account = Some(account);
+                // Transport failure: no response bytes to client → allow fail-over.
+                if attempt + 1 < MAX_FAILOVER_ATTEMPTS {
+                    continue;
+                }
+            }
+        }
+    }
+
+    // Exhausted attempts: if we have a last fail-over response, stream it so the
+    // client sees the real upstream status (e.g. final 429).
+    if let Some(res) = last_failover_response {
+        return Ok(stream_upstream_response(
+            state,
+            member,
+            start,
+            res,
+            last_account.as_ref(),
+        ));
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        AppError::Upstream("no upstream account available after fail-over attempts".into())
+    }))
 }
 
 /// Map reqwest byte stream → io errors, update metrics side-channel, hold usage guard.
@@ -469,4 +641,3 @@ mod tests {
         assert!(m.line_buf.is_empty());
     }
 }
-

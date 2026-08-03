@@ -7,6 +7,7 @@ use crate::auth::member_key::{
     load_active_keys, verify_key, MemberApiKeyRow, MemberContext,
 };
 use crate::db::Db;
+use crate::router::AccountRef;
 
 /// Cached active member key material for hot-path bearer auth.
 #[derive(Clone, Debug)]
@@ -16,16 +17,27 @@ struct CachedKey {
     key_hash: String,
 }
 
+/// Account entry in a routing pool (enablement filtered before pick).
+#[derive(Clone, Debug)]
+pub struct CachedAccount {
+    pub account: AccountRef,
+    pub enabled: bool,
+}
+
 /// In-memory config/auth cache. Keys indexed by 8-char prefix → candidate hashes.
+/// Also holds account pools for the hot-path AccountRouter.
 #[derive(Clone)]
 pub struct ConfigCache {
     keys_by_prefix: Arc<RwLock<HashMap<String, Vec<CachedKey>>>>,
+    /// pool_key → accounts (enabled + disabled). Disabled skipped by [`Self::enabled_accounts`].
+    account_pools: Arc<RwLock<HashMap<String, Vec<CachedAccount>>>>,
 }
 
 impl ConfigCache {
     pub fn new() -> Self {
         Self {
             keys_by_prefix: Arc::new(RwLock::new(HashMap::new())),
+            account_pools: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -111,6 +123,42 @@ impl ConfigCache {
             }
         }
         None
+    }
+
+    /// Replace the full account pool for `pool_key` (tests + future provider load).
+    pub fn set_account_pool(&self, pool_key: impl Into<String>, accounts: Vec<CachedAccount>) {
+        let mut guard = self
+            .account_pools
+            .write()
+            .expect("config cache account_pools lock poisoned");
+        guard.insert(pool_key.into(), accounts);
+    }
+
+    /// Clear all account pools (tests).
+    pub fn clear_account_pools(&self) {
+        let mut guard = self
+            .account_pools
+            .write()
+            .expect("config cache account_pools lock poisoned");
+        guard.clear();
+    }
+
+    /// Enabled accounts for a pool, in stored order. Disabled entries are skipped.
+    pub fn enabled_accounts(&self, pool_key: &str) -> Vec<AccountRef> {
+        let guard = self
+            .account_pools
+            .read()
+            .expect("config cache account_pools lock poisoned");
+        guard
+            .get(pool_key)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e.enabled)
+                    .map(|e| e.account.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
