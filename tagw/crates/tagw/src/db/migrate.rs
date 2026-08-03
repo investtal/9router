@@ -32,7 +32,21 @@ pub(super) fn run(db: &Db) -> Result<()> {
     Ok(())
 }
 
+fn resolve_admin_password() -> String {
+    match std::env::var("TAGW_ADMIN_PASSWORD") {
+        Ok(p) if p.is_empty() => {
+            tracing::warn!(
+                "TAGW_ADMIN_PASSWORD is empty — rejecting empty hash and falling back to default 'admin'"
+            );
+            "admin".to_string()
+        }
+        Ok(p) => p,
+        Err(_) => "admin".to_string(),
+    }
+}
+
 fn seed_admin_if_empty(db: &Db) -> Result<()> {
+    // Fast path: avoid expensive argon2 when users already exist.
     let count: i64 = db.with_conn(|conn| {
         conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
     })?;
@@ -40,8 +54,7 @@ fn seed_admin_if_empty(db: &Db) -> Result<()> {
         return Ok(());
     }
 
-    let password =
-        std::env::var("TAGW_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".to_string());
+    let password = resolve_admin_password();
     if password == "admin" {
         tracing::warn!(
             "seeding default admin user with password 'admin' — set TAGW_ADMIN_PASSWORD for production"
@@ -52,16 +65,28 @@ fn seed_admin_if_empty(db: &Db) -> Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO users (id, username, password_hash, oidc_sub, role, created_at)
-             VALUES (?1, 'admin', ?2, NULL, 'admin', ?3)",
-            params![id, password_hash, now],
-        )?;
-        Ok(())
+    // Count + insert in one transaction so concurrent migrate cannot double-seed
+    // or hit a spurious UNIQUE failure on username.
+    let seeded = db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+        let seeded = if count == 0 {
+            tx.execute(
+                "INSERT INTO users (id, username, password_hash, oidc_sub, role, created_at)
+                 VALUES (?1, 'admin', ?2, NULL, 'admin', ?3)",
+                params![id, password_hash, now],
+            )?;
+            true
+        } else {
+            false
+        };
+        tx.commit()?;
+        Ok(seeded)
     })?;
 
-    tracing::info!("seeded default admin user");
+    if seeded {
+        tracing::info!("seeded default admin user");
+    }
     Ok(())
 }
 

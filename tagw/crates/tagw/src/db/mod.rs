@@ -24,6 +24,8 @@ impl Db {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("open sqlite database {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_millis(5000))
+            .context("set busy_timeout=5000ms")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("set journal_mode=WAL")?;
         conn.pragma_update(None, "foreign_keys", true)
