@@ -7,6 +7,7 @@ pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod kimi;
+pub mod loopback;
 pub mod pkce;
 pub mod refresh;
 pub mod types;
@@ -129,8 +130,30 @@ async fn oauth_start(
     let impl_ = provider_by_id(&provider, http)
         .ok_or_else(|| AppError::NotFound(format!("unknown oauth provider '{provider}'")))?;
 
-    let redirect_uri = resolve_redirect_uri(&state, &provider, &headers, q.redirect_uri);
-    let pkce = generate_pkce(redirect_uri);
+    // Codex / xAI public clients only accept fixed loopback redirect URIs.
+    // Using TAGW_PUBLIC_BASE (/api/oauth/.../callback) causes:
+    //   - OpenAI: authorize_hydra_invalid_request
+    //   - xAI: redirect_uri does not match any registered URI
+    let redirect_uri = if let Some(spec) = loopback::loopback_for_provider(&provider) {
+        loopback::ensure_loopback_server(state.clone(), &provider, &state.oauth_loopback_ports)
+            .await?;
+        if q.redirect_uri.is_some() {
+            tracing::warn!(
+                provider = %provider,
+                "ignoring custom redirect_uri; public OAuth client requires {}",
+                spec.redirect_uri()
+            );
+        }
+        spec.redirect_uri()
+    } else {
+        resolve_redirect_uri(&state, &provider, &headers, q.redirect_uri)
+    };
+    let pkce = if provider == "xai" {
+        // xAI expects a long PKCE verifier (96 raw bytes → base64url), per 9router / CLIProxyAPI.
+        pkce::generate_pkce_with_verifier_bytes(redirect_uri, 96)
+    } else {
+        generate_pkce(redirect_uri)
+    };
     let authorize_url = impl_.authorize_url(&pkce);
 
     {

@@ -7,11 +7,19 @@ use sha2::{Digest, Sha256};
 
 use super::types::Pkce;
 
-/// Generate a PKCE pair + random state for an OAuth start.
+/// Generate a PKCE pair + random state for an OAuth start (32-byte verifier).
 pub fn generate_pkce(redirect_uri: impl Into<String>) -> Pkce {
-    let mut verifier_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut verifier_bytes);
-    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+    generate_pkce_with_verifier_bytes(redirect_uri, 32)
+}
+
+/// Generate PKCE with a custom verifier length in **raw bytes** (before base64url).
+///
+/// xAI / grok-cli uses 96 raw bytes (see 9router `XAI_PKCE_VERIFIER_BYTES`).
+pub fn generate_pkce_with_verifier_bytes(redirect_uri: impl Into<String>, verifier_bytes: usize) -> Pkce {
+    let n = verifier_bytes.clamp(32, 128);
+    let mut raw = vec![0u8; n];
+    OsRng.fill_bytes(&mut raw);
+    let code_verifier = URL_SAFE_NO_PAD.encode(&raw);
 
     let mut hasher = Sha256::new();
     hasher.update(code_verifier.as_bytes());

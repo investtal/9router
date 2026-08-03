@@ -5,6 +5,7 @@ use crate::auth::dashboard::DEFAULT_SESSION_SECRET;
 use crate::cache::ConfigCache;
 use crate::db::Db;
 use crate::live::LiveLogHub;
+use crate::oauth::loopback::{new_bound_ports, BoundPorts};
 use crate::oauth::new_pending_map;
 use crate::oauth::refresh::PendingMap;
 use crate::router::AccountRouter;
@@ -43,6 +44,8 @@ pub struct AppState {
     pub public_base: Option<String>,
     /// In-memory PKCE sessions for OAuth start → callback (keyed by state).
     pub oauth_pending: PendingMap,
+    /// Ports with an active loopback OAuth catcher (Codex 1455, xAI 56121).
+    pub oauth_loopback_ports: BoundPorts,
     /// HMAC secret for signed `tagw_session` cookies (`TAGW_SESSION_SECRET`).
     pub session_secret: String,
     /// Live console hub (SSE broadcast + recent ring).
@@ -64,6 +67,7 @@ impl AppState {
             upstream_auth: None,
             public_base: None,
             oauth_pending: new_pending_map(),
+            oauth_loopback_ports: new_bound_ports(),
             // Callers should set via `with_session_secret` / Config; default is the dev secret.
             session_secret: DEFAULT_SESSION_SECRET.to_string(),
             live: LiveLogHub::new(),
