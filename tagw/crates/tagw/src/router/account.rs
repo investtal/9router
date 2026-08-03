@@ -18,6 +18,9 @@ pub struct AccountRef {
     pub upstream_base: String,
     /// Authorization header value, e.g. `"Bearer sk-..."` or a raw token.
     pub auth_header: String,
+    /// When true, proxy must [`crate::oauth::ensure_access_token`] before the
+    /// upstream hop and may force-refresh + same-account retry on 401.
+    pub is_oauth: bool,
 }
 
 /// Round-robin router. Thread-safe cursors keyed by pool; shared across clones.
@@ -79,6 +82,7 @@ mod tests {
             provider_id: "prov".into(),
             upstream_base: format!("http://{id}.example"),
             auth_header: format!("Bearer {id}"),
+            is_oauth: false,
         }
     }
 

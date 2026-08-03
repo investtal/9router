@@ -373,6 +373,7 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
             provider_id: provider_id.clone(),
             upstream_base: base,
             auth_header: format!("Bearer {}", creds.access_token),
+            is_oauth: true,
         };
         let cached = CachedAccount {
             account: account.clone(),

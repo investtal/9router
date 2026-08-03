@@ -14,6 +14,7 @@ use bytes::Bytes;
 
 use crate::auth::member_key::MemberContext;
 use crate::error::AppError;
+use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
 use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
 use crate::state::{AppState, DEFAULT_POOL_KEY};
@@ -426,7 +427,45 @@ pub async fn proxy_openai(
     ))
 }
 
+/// Ensure a fresh Bearer for an OAuth account (skewed refresh when near expiry).
+/// Updates `account.auth_header` in place. No-op for API-key accounts.
+async fn ensure_oauth_auth_header(
+    state: &AppState,
+    account: &mut AccountRef,
+    force: bool,
+) -> Result<(), AppError> {
+    if !account.is_oauth {
+        return Ok(());
+    }
+    let token = ensure_access_token_with_client(
+        &state.db,
+        &state.cache,
+        &account.account_id,
+        &state.http_client,
+        force,
+    )
+    .await?;
+    account.auth_header = format!("Bearer {token}");
+    Ok(())
+}
+
+/// Whether this pre-body status should fail over to another account.
+///
+/// OAuth 401 is only fail-over-eligible **after** a same-account force-refresh
+/// retry has already been attempted (see [`proxy_with_router`]).
+fn should_failover_status(status: u16, oauth_401_after_refresh: bool) -> bool {
+    if AccountRouter::should_failover(status) {
+        return true;
+    }
+    oauth_401_after_refresh && status == 401
+}
+
 /// Round-robin pick + fail-over loop (status check before any client body byte).
+///
+/// OAuth accounts:
+/// 1. `ensure_access_token` before each upstream hop (refresh if near expiry).
+/// 2. On upstream 401: force-refresh once, retry **same** account once, then fail-over.
+/// Never switches accounts after the first client body byte.
 async fn proxy_with_router(
     state: &AppState,
     member: &MemberContext,
@@ -442,9 +481,26 @@ async fn proxy_with_router(
     let mut last_account: Option<AccountRef> = None;
 
     for attempt in 0..MAX_FAILOVER_ATTEMPTS {
-        let Some(account) = state.account_router.pick(DEFAULT_POOL_KEY, accounts) else {
+        let Some(mut account) = state.account_router.pick(DEFAULT_POOL_KEY, accounts) else {
             break;
         };
+
+        // Pre-hop OAuth ensure (near-expiry / missing freshness in pool cache).
+        if let Err(e) = ensure_oauth_auth_header(state, &mut account, false).await {
+            tracing::warn!(
+                attempt,
+                account_id = %account.account_id,
+                error = %e,
+                "oauth ensure_access_token failed before hop; trying next account"
+            );
+            last_error = Some(e);
+            last_account = Some(account);
+            if attempt + 1 < MAX_FAILOVER_ATTEMPTS {
+                continue;
+            }
+            break;
+        }
+
         let url = format!(
             "{}{}",
             account.upstream_base.trim_end_matches('/'),
@@ -461,6 +517,7 @@ async fn proxy_with_router(
         tracing::debug!(
             attempt,
             account_id = %account.account_id,
+            is_oauth = account.is_oauth,
             url = %url,
             "proxy attempt"
         );
@@ -474,10 +531,86 @@ async fn proxy_with_router(
         )
         .await
         {
-            Ok(upstream_res) => {
-                let status_u16 = upstream_res.status().as_u16();
+            Ok(mut upstream_res) => {
+                let mut status_u16 = upstream_res.status().as_u16();
+                let mut oauth_401_after_refresh = false;
+
+                // OAuth 401: force-refresh once + retry same account once (still pre-body).
+                if status_u16 == 401 && account.is_oauth {
+                    tracing::info!(
+                        attempt,
+                        account_id = %account.account_id,
+                        "oauth upstream 401; force-refresh and retry same account"
+                    );
+                    match ensure_oauth_auth_header(state, &mut account, true).await {
+                        Ok(()) => {
+                            let retry_headers = match build_upstream_headers(
+                                req_headers,
+                                Some(&account.auth_header),
+                            ) {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    last_error = Some(e);
+                                    last_account = Some(account);
+                                    if attempt + 1 < MAX_FAILOVER_ATTEMPTS {
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            };
+                            // Drop first 401 without forwarding any bytes.
+                            drop(upstream_res);
+                            match send_upstream(
+                                &state.http_client,
+                                method,
+                                &url,
+                                &retry_headers,
+                                body_bytes.clone(),
+                            )
+                            .await
+                            {
+                                Ok(retry_res) => {
+                                    upstream_res = retry_res;
+                                    status_u16 = upstream_res.status().as_u16();
+                                    oauth_401_after_refresh = true;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        attempt,
+                                        account_id = %account.account_id,
+                                        error = %e,
+                                        "oauth same-account retry transport error"
+                                    );
+                                    last_error = Some(e);
+                                    last_account = Some(account);
+                                    if attempt + 1 < MAX_FAILOVER_ATTEMPTS {
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                attempt,
+                                account_id = %account.account_id,
+                                error = %e,
+                                "oauth force-refresh after 401 failed; fail-over"
+                            );
+                            last_error = Some(e);
+                            // Keep original 401 for final stream if no more accounts.
+                            last_failover_response = Some(upstream_res);
+                            last_account = Some(account);
+                            if attempt + 1 < MAX_FAILOVER_ATTEMPTS {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                }
+
                 let can_retry = attempt + 1 < MAX_FAILOVER_ATTEMPTS
-                    && AccountRouter::should_failover(status_u16);
+                    && should_failover_status(status_u16, oauth_401_after_refresh);
                 if can_retry {
                     tracing::info!(
                         attempt,

@@ -1,7 +1,12 @@
 //! OAuth refresh: mock token endpoint → expired account → ensure_access_token refreshes once.
+//! Also: proxy path ensures token pre-hop and force-refreshes on upstream 401.
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use chrono::{Duration, Utc};
 use serde_json::json;
+use tagw::app::build_app;
+use tagw::auth::member_key::create_member_key;
 use tagw::oauth::codex::CodexProvider;
 use tagw::oauth::types::{
     OAuthCredentials, OAuthProvider, TokenSet, ACCESS_TOKEN_REFRESH_SKEW_SECS,
@@ -10,7 +15,8 @@ use tagw::oauth::{
     ensure_access_token_with_client, insert_oauth_account, load_oauth_account_pools,
 };
 use tagw::state::{AppState, DEFAULT_POOL_KEY};
-use wiremock::matchers::{body_string_contains, method, path};
+use tower::ServiceExt;
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Required test: expired token → ensure_access_token calls refresh once → new token in SQLite.
@@ -196,6 +202,7 @@ async fn oauth_account_loads_into_pool() {
     let hit = enabled.iter().find(|a| a.account_id == aid).expect("in pool");
     assert_eq!(hit.auth_header, "Bearer pool-token");
     assert_eq!(hit.upstream_base, "https://api.openai.com");
+    assert!(hit.is_oauth, "oauth pool entries must set is_oauth");
 
     let pools = load_oauth_account_pools(&state.db).unwrap();
     assert!(pools.contains_key(DEFAULT_POOL_KEY));
@@ -212,4 +219,195 @@ async fn token_set_from_oauth_json() {
     assert_eq!(t.access_token, "a");
     assert_eq!(t.refresh_token.as_deref(), Some("r"));
     assert!(t.expires_at.is_some());
+}
+
+/// Proxy pre-hop: expired OAuth access token is refreshed before the upstream call
+/// so the mock API only ever sees the new Bearer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_ensures_oauth_token_before_upstream() {
+    let mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("refresh-expired"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "access_token": "access-refreshed",
+                    "refresh_token": "refresh-expired",
+                    "expires_in": 3600
+                })),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    // Upstream must receive the refreshed token only (never the expired one).
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer access-refreshed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"id":"ok","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    // Reject if stale Bearer is used (guards against missing ensure).
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer access-expired"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let state = AppState::new_for_test().await;
+    let creds = OAuthCredentials {
+        access_token: "access-expired".into(),
+        refresh_token: Some("refresh-expired".into()),
+        expires_at: Some(Utc::now() - Duration::seconds(30)),
+        base_url: Some(mock.uri()),
+        token_url: Some(format!("{}/oauth/token", mock.uri())),
+        client_id: Some("test-client".into()),
+        client_secret: None,
+        extra: None,
+    };
+    let (_pid, _aid) =
+        insert_oauth_account(&state.db, "codex", "proxy-pre-ensure", &creds).unwrap();
+    state.cache.reload(&state.db).unwrap();
+
+    let (row, plaintext) = create_member_key(&state.db, "oauth-proxy-user").unwrap();
+    state.cache.upsert(&row);
+
+    let app = build_app(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o","messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("\"id\":\"ok\""));
+}
+
+/// Proxy OAuth 401 path: force-refresh once, retry same account with new token,
+/// never mid-body switch (retry is still pre-first-byte).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_oauth_401_force_refresh_then_retry_same_account() {
+    let mock = MockServer::start().await;
+
+    // Access token is still "fresh" by expires_at so pre-hop ensure does not refresh.
+    // Upstream rejects it once; after force-refresh, accepts the new token.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer access-stale"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"error":"invalid_token"}"#),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("refresh-stale"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "access_token": "access-fresh",
+                    "refresh_token": "refresh-stale",
+                    "expires_in": 3600
+                })),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer access-fresh"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(
+                    r#"{"id":"after-retry","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#,
+                ),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let state = AppState::new_for_test().await;
+    let creds = OAuthCredentials {
+        access_token: "access-stale".into(),
+        refresh_token: Some("refresh-stale".into()),
+        expires_at: Some(Utc::now() + Duration::hours(1)),
+        base_url: Some(mock.uri()),
+        token_url: Some(format!("{}/oauth/token", mock.uri())),
+        client_id: Some("test-client".into()),
+        client_secret: None,
+        extra: None,
+    };
+    let (_pid, aid) =
+        insert_oauth_account(&state.db, "codex", "proxy-401-retry", &creds).unwrap();
+    state.cache.reload(&state.db).unwrap();
+
+    // Sanity: pool has oauth flag.
+    let pool = state.cache.enabled_accounts(DEFAULT_POOL_KEY);
+    let hit = pool.iter().find(|a| a.account_id == aid).expect("in pool");
+    assert!(hit.is_oauth);
+    assert_eq!(hit.auth_header, "Bearer access-stale");
+
+    let (row, plaintext) = create_member_key(&state.db, "oauth-401-user").unwrap();
+    state.cache.upsert(&row);
+
+    let app = build_app(state.clone());
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o","messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("after-retry"),
+        "client must see success after same-account 401 retry"
+    );
+
+    // Force-refresh persisted the new token.
+    let stored_raw: String = state
+        .db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT credentials_json FROM accounts WHERE id = ?1",
+                rusqlite::params![aid],
+                |r| r.get::<_, String>(0),
+            )
+        })
+        .unwrap();
+    let stored: OAuthCredentials = serde_json::from_str(&stored_raw).unwrap();
+    assert_eq!(stored.access_token, "access-fresh");
 }

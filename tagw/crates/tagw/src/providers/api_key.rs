@@ -511,6 +511,7 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
             provider_id: provider_id.clone(),
             upstream_base: base.trim_end_matches('/').to_string(),
             auth_header: format!("Bearer {}", creds.api_key),
+            is_oauth: false,
         };
         let cached = CachedAccount {
             account: account.clone(),

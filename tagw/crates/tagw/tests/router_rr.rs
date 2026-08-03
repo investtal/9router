@@ -25,6 +25,7 @@ fn acct(id: &str, base: &str) -> AccountRef {
         provider_id: "prov-1".into(),
         upstream_base: base.into(),
         auth_header: format!("Bearer {id}"),
+        is_oauth: false,
     }
 }
 
