@@ -18,6 +18,10 @@ use crate::proxy::stream::forward_io_stream;
 use crate::state::AppState;
 use crate::usage::{estimate_cost, UsageEvent};
 
+/// Max side-channel line buffer for usage parse. Cap prevents unbounded hold of
+/// body-ish data when upstream never sends a newline (client stream is unaffected).
+const LINE_BUF_MAX: usize = 256 * 1024;
+
 /// Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1).
 fn is_hop_by_hop(name: &str) -> bool {
     matches!(
@@ -150,20 +154,49 @@ impl StreamMetrics {
         // Side-channel line scan only — never holds the body for the client.
         if let Ok(s) = std::str::from_utf8(chunk) {
             self.line_buf.push_str(s);
-            while let Some(pos) = self.line_buf.find('\n') {
-                let mut line = self.line_buf.drain(..=pos).collect::<String>();
-                if line.ends_with('\n') {
-                    line.pop();
-                }
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-                parse_usage_from_line(&line, self);
+            self.drain_complete_lines();
+            // Cap: oversized buffer without newline must not retain full-body-ish data.
+            if self.line_buf.len() > LINE_BUF_MAX {
+                tracing::warn!(
+                    len = self.line_buf.len(),
+                    cap = LINE_BUF_MAX,
+                    "usage line_buf exceeded cap without newline; clearing (usage incomplete)"
+                );
+                self.line_buf.clear();
+                self.usage_incomplete = true;
             }
         }
     }
 
-    fn into_event(self) -> UsageEvent {
+    /// Drain newline-terminated lines from `line_buf` into the usage parser.
+    fn drain_complete_lines(&mut self) {
+        while let Some(pos) = self.line_buf.find('\n') {
+            let mut line = self.line_buf.drain(..=pos).collect::<String>();
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            parse_usage_from_line(&line, self);
+        }
+    }
+
+    /// At end-of-stream, parse any remaining buffer (non-newline-terminated JSON bodies).
+    fn flush_line_buf(&mut self) {
+        if self.line_buf.is_empty() {
+            return;
+        }
+        let line = std::mem::take(&mut self.line_buf);
+        let line = line.trim_end_matches(['\r', '\n']);
+        if !line.is_empty() {
+            parse_usage_from_line(line, self);
+        }
+    }
+
+    fn into_event(mut self) -> UsageEvent {
+        // EOS: flush residual line_buf so non-stream JSON without trailing `\n` still parses.
+        self.flush_line_buf();
         let latency_ms = Some(self.start.elapsed().as_millis() as i64);
         let ttft_ms = self
             .first_byte_at
@@ -205,7 +238,13 @@ impl Drop for UsageOnComplete {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.metrics.lock() {
             if let Some(m) = guard.take() {
-                let _ = self.usage_tx.try_send(m.into_event());
+                // Non-blocking: never await the writer; log if the channel is full/closed.
+                if let Err(e) = self.usage_tx.try_send(m.into_event()) {
+                    tracing::warn!(
+                        error = %e,
+                        "usage channel full or closed; dropping UsageEvent"
+                    );
+                }
             }
         }
     }
@@ -361,4 +400,73 @@ fn async_stream_map(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    #[test]
+    fn flush_line_buf_parses_non_newline_terminated_json() {
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        // Simulate a full non-stream JSON body delivered in one chunk with no trailing `\n`.
+        let body = r#"{"id":"cmpl","model":"gpt-4o","usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}"#;
+        m.on_bytes(&Bytes::from(body));
+        // Still buffered (no newline), usage not complete yet.
+        assert!(m.usage_incomplete);
+        assert_eq!(m.prompt_tokens, 0);
+
+        m.flush_line_buf();
+        assert!(!m.usage_incomplete);
+        assert_eq!(m.prompt_tokens, 11);
+        assert_eq!(m.completion_tokens, 3);
+        assert_eq!(m.cached_tokens, 2);
+        assert_eq!(m.model.as_deref(), Some("gpt-4o"));
+        assert!(m.line_buf.is_empty());
+    }
+
+    #[test]
+    fn into_event_flushes_residual_line_buf() {
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        m.on_bytes(&Bytes::from(
+            r#"{"model":"gpt-4o","usage":{"prompt_tokens":5,"completion_tokens":1}}"#,
+        ));
+        let ev = m.into_event();
+        assert!(!ev.usage_incomplete);
+        assert_eq!(ev.prompt_tokens, 5);
+        assert_eq!(ev.completion_tokens, 1);
+        assert!(ev.latency_ms.is_some());
+        assert_eq!(ev.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(ev.member_key_id.as_deref(), Some("key-1"));
+        assert_eq!(ev.status, Some(200));
+    }
+
+    #[test]
+    fn line_buf_cap_clears_oversized_buffer_without_newline() {
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        // One huge chunk with no newline exceeds LINE_BUF_MAX.
+        let huge = "x".repeat(LINE_BUF_MAX + 1);
+        m.on_bytes(&Bytes::from(huge));
+        assert!(m.line_buf.is_empty(), "oversized line_buf must be cleared");
+        assert!(m.usage_incomplete);
+
+        // Subsequent newline-terminated usage can still parse.
+        m.on_bytes(&Bytes::from(
+            "data: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":1}}\n",
+        ));
+        assert!(!m.usage_incomplete);
+        assert_eq!(m.prompt_tokens, 9);
+    }
+
+    #[test]
+    fn newline_terminated_sse_usage_parses_without_explicit_flush() {
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        m.on_bytes(&Bytes::from(
+            "data: {\"id\":\"c\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n",
+        ));
+        assert!(!m.usage_incomplete);
+        assert_eq!(m.prompt_tokens, 10);
+        assert_eq!(m.completion_tokens, 2);
+        assert!(m.line_buf.is_empty());
+    }
+}
 

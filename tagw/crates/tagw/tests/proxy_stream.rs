@@ -209,6 +209,109 @@ async fn chat_completions_forwards_upstream_authorization_wiremock() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
+/// Non-stream JSON body with no trailing newline: usage parse + latency via EOS flush.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_stream_json_usage_enqueued_with_latency() {
+    let mock = MockServer::start().await;
+
+    // Single JSON body, deliberately without a trailing newline so line_buf must flush at EOS.
+    let body = r#"{"id":"cmpl-1","object":"chat.completion","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(body),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let state = AppState::new_for_test()
+        .await
+        .with_upstream(mock.uri(), Some("Bearer upstream".into()));
+    let db = state.db.clone();
+    let (row, plaintext) = create_member_key(&state.db, "usage-json-user").unwrap();
+    state.cache.upsert(&row);
+
+    let app = build_app(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o","messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let resp_body = axum::body::to_bytes(res.into_body(), 1024 * 64)
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&resp_body).contains("cmpl-1"),
+        "client must receive the JSON body"
+    );
+
+    // Usage writer batches every 50ms; wait for the row after stream Drop → try_send.
+    let mut row_found = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let n: i64 = db
+            .with_conn(|c| c.query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get(0)))
+            .unwrap();
+        if n >= 1 {
+            row_found = true;
+            break;
+        }
+    }
+    assert!(row_found, "expected a request_logs row after proxy response");
+
+    let (prompt, completion, cached, incomplete, latency, model, status): (
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<i32>,
+    ) = db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT prompt_tokens, completion_tokens, cached_tokens, usage_incomplete, \
+                 latency_ms, model, status FROM request_logs ORDER BY rowid DESC LIMIT 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+        })
+        .unwrap();
+
+    assert_eq!(prompt, 11, "prompt_tokens from non-stream JSON");
+    assert_eq!(completion, 3, "completion_tokens from non-stream JSON");
+    assert_eq!(cached, 2, "cached_tokens from prompt_tokens_details");
+    assert_eq!(incomplete, 0, "usage_incomplete must be false after parse");
+    assert_eq!(model.as_deref(), Some("gpt-4o"));
+    assert_eq!(status, Some(200));
+    assert!(
+        latency.is_some() && latency.unwrap() >= 0,
+        "latency_ms must be present, got {latency:?}"
+    );
+}
+
 #[tokio::test]
 async fn chat_completions_rejects_missing_bearer() {
     let state = AppState::new_for_test()
