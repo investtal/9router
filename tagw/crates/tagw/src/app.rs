@@ -1,4 +1,6 @@
 use axum::{routing::get, Router};
+
+use crate::admin;
 use crate::state::AppState;
 
 pub fn build_app(state: AppState) -> Router {
@@ -14,5 +16,6 @@ pub fn build_app(state: AppState) -> Router {
                 }
             }),
         )
+        .merge(admin::keys::router())
         .with_state(state)
 }

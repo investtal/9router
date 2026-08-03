@@ -1,0 +1,80 @@
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::routing::{delete, post};
+use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+
+use crate::auth::member_key::{
+    create_member_key, list_member_keys, revoke_member_key, MemberApiKeyPublic,
+};
+use crate::error::AppError;
+use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct CreateKeyRequest {
+    pub name: String,
+}
+
+/// Response for key creation — includes plaintext secret once.
+#[derive(Debug, Serialize)]
+pub struct CreateKeyResponse {
+    pub id: String,
+    pub name: String,
+    pub key_prefix: String,
+    pub created_at: String,
+    /// Plaintext API key; shown only on create.
+    pub key: String,
+}
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        // AUTHZ: Task 10 — allow all for now
+        .route("/api/admin/keys", post(create_key).get(list_keys))
+        // AUTHZ: Task 10 — allow all for now
+        .route("/api/admin/keys/{id}", delete(delete_key))
+}
+
+async fn create_key(
+    State(state): State<AppState>,
+    Json(body): Json<CreateKeyRequest>,
+) -> Result<Json<CreateKeyResponse>, AppError> {
+    // AUTHZ: Task 10
+    let (row, plaintext) = create_member_key(&state.db, &body.name)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    state
+        .cache
+        .reload(&state.db)
+        .map_err(AppError::Internal)?;
+    Ok(Json(CreateKeyResponse {
+        id: row.id,
+        name: row.name,
+        key_prefix: row.key_prefix,
+        created_at: row.created_at,
+        key: plaintext,
+    }))
+}
+
+async fn list_keys(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MemberApiKeyPublic>>, AppError> {
+    // AUTHZ: Task 10
+    let rows = list_member_keys(&state.db).map_err(AppError::Internal)?;
+    let public: Vec<MemberApiKeyPublic> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(public))
+}
+
+async fn delete_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    // AUTHZ: Task 10
+    let revoked = revoke_member_key(&state.db, &id).map_err(AppError::Internal)?;
+    if !revoked {
+        return Err(AppError::NotFound(format!("member key {id}")));
+    }
+    state
+        .cache
+        .reload(&state.db)
+        .map_err(AppError::Internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}

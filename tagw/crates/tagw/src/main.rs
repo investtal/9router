@@ -1,4 +1,5 @@
 use tagw::app::build_app;
+use tagw::cache::ConfigCache;
 use tagw::config::Config;
 use tagw::db::Db;
 use tagw::state::AppState;
@@ -13,7 +14,9 @@ async fn main() -> anyhow::Result<()> {
     let db_path = cfg.data_dir.join("gateway.db");
     let db = Db::open(&db_path)?;
     db.migrate()?;
-    let state = AppState::new(db);
+    let cache = ConfigCache::new();
+    cache.load(&db)?;
+    let state = AppState::new(db, cache);
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("listening on {}", cfg.bind);
