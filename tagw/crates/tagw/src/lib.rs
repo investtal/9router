@@ -12,7 +12,8 @@ pub mod proxy;
 pub mod quota;
 pub mod router;
 pub mod state;
+pub mod static_files;
 pub mod usage;
 
-pub use app::build_app;
+pub use app::{build_app, build_app_with_static};
 

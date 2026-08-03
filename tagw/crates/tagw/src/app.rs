@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use axum::routing::{any, get, post};
 use axum::Router;
 
@@ -9,7 +11,9 @@ use crate::oauth;
 use crate::proxy;
 use crate::quota;
 use crate::state::AppState;
+use crate::static_files::{self, cors_layer};
 
+/// Build the API + proxy router (no SPA assets). Used by tests and as the base for production.
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -41,5 +45,11 @@ pub fn build_app(state: AppState) -> Router {
         )
         // OpenAI-compatible passthrough: POST /v1/chat/completions and other /v1/*
         .route("/v1/{*path}", any(proxy::openai::proxy_openai))
+        .layer(cors_layer())
         .with_state(state)
+}
+
+/// Full production app: API/proxy routes first, then SPA static assets as fallback.
+pub fn build_app_with_static(state: AppState, web_dir: PathBuf) -> Router {
+    static_files::with_static_files(build_app(state), web_dir)
 }

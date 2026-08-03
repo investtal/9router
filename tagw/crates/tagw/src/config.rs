@@ -1,9 +1,12 @@
+use std::path::PathBuf;
+
 use crate::auth::dashboard::resolve_session_secret;
+use crate::static_files::resolve_web_dir;
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind: String,
-    pub data_dir: std::path::PathBuf,
+    pub data_dir: PathBuf,
     /// Temporary single upstream base URL (Task 5). Replaced by AccountRouter in Task 6.
     /// Example: `http://127.0.0.1:8080` — request path `/v1/...` is appended.
     pub upstream: Option<String>,
@@ -13,6 +16,8 @@ pub struct Config {
     pub public_base: Option<String>,
     /// HMAC secret for dashboard session cookies (`TAGW_SESSION_SECRET`).
     pub session_secret: String,
+    /// Directory of built TanStack SPA assets (`TAGW_WEB_DIR`, default `tagw/web/dist`).
+    pub web_dir: PathBuf,
 }
 
 impl Config {
@@ -30,6 +35,7 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             session_secret: resolve_session_secret(),
+            web_dir: resolve_web_dir(),
         }
     }
 }

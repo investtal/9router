@@ -1,4 +1,4 @@
-use tagw::app::build_app;
+use tagw::app::build_app_with_static;
 use tagw::cache::ConfigCache;
 use tagw::config::Config;
 use tagw::db::Db;
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         state.cache.clone(),
         state.http_client.clone(),
     );
-    let app = build_app(state);
+    let app = build_app_with_static(state, cfg.web_dir.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("listening on {}", cfg.bind);
     axum::serve(listener, app).await?;
