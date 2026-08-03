@@ -29,7 +29,7 @@ use crate::cache::{CachedAccount, ConfigCache};
 use crate::db::Db;
 use crate::error::AppError;
 use crate::router::AccountRef;
-use crate::state::{AppState, DEFAULT_POOL_KEY};
+use crate::state::{AppState, ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
 
 pub use refresh::{
     ensure_access_token, ensure_access_token_with_client, provider_by_id, spawn_oauth_refresh_loop,
@@ -335,6 +335,7 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
 
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
     let mut default_pool: Vec<CachedAccount> = Vec::new();
+    let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type) in rows {
         let creds: OAuthCredentials = match serde_json::from_str(&creds_raw) {
@@ -384,10 +385,15 @@ pub fn load_oauth_account_pools(db: &Db) -> anyhow::Result<HashMap<String, Vec<C
             .or_default()
             .push(cached.clone());
         if enabled {
-            default_pool.push(cached);
+            default_pool.push(cached.clone());
+            // Claude OAuth is Anthropic Messages-compatible.
+            if provider_type == "claude" {
+                anthropic_pool.push(cached);
+            }
         }
     }
     by_provider.insert(DEFAULT_POOL_KEY.to_string(), default_pool);
+    by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
     Ok(by_provider)
 }
 

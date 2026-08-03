@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::cache::CachedAccount;
 use crate::db::Db;
 use crate::router::AccountRef;
-use crate::state::DEFAULT_POOL_KEY;
+use crate::state::{ANTHROPIC_POOL_KEY, DEFAULT_POOL_KEY};
 
 /// Supported API-key provider type strings (schema + admin API).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,6 +470,7 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
 
     let mut by_provider: HashMap<String, Vec<CachedAccount>> = HashMap::new();
     let mut default_pool: Vec<CachedAccount> = Vec::new();
+    let mut anthropic_pool: Vec<CachedAccount> = Vec::new();
 
     for (account_id, provider_id, acct_enabled, creds_raw, prov_enabled, provider_type_str) in rows
     {
@@ -525,11 +526,15 @@ pub fn load_account_pools(db: &Db) -> Result<HashMap<String, Vec<CachedAccount>>
 
         // Default pool: only effectively enabled accounts (proxy RR).
         if enabled {
-            default_pool.push(cached);
+            default_pool.push(cached.clone());
+            if provider_type == ApiKeyProviderType::Anthropic {
+                anthropic_pool.push(cached);
+            }
         }
     }
 
     by_provider.insert(DEFAULT_POOL_KEY.to_string(), default_pool);
+    by_provider.insert(ANTHROPIC_POOL_KEY.to_string(), anthropic_pool);
     Ok(by_provider)
 }
 

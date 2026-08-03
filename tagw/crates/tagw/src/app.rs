@@ -1,4 +1,4 @@
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::Router;
 
 use crate::admin;
@@ -22,6 +22,12 @@ pub fn build_app(state: AppState) -> Router {
         .merge(admin::keys::router())
         .merge(admin::providers::router())
         .merge(oauth::router())
+        // Anthropic Messages (Claude Code) — registered before OpenAI catch-all.
+        .route("/v1/messages", post(proxy::anthropic::proxy_anthropic))
+        .route(
+            "/v1/messages/count_tokens",
+            post(proxy::anthropic::proxy_anthropic),
+        )
         // OpenAI-compatible passthrough: POST /v1/chat/completions and other /v1/*
         .route("/v1/{*path}", any(proxy::openai::proxy_openai))
         .with_state(state)

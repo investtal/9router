@@ -11,6 +11,10 @@ use crate::usage::{spawn_usage_writer, UsageTx, USAGE_CHANNEL_CAPACITY};
 /// Default routing pool key until model→provider mapping lands (Task 7+).
 pub const DEFAULT_POOL_KEY: &str = "default";
 
+/// Prefer this pool for Anthropic Messages (`/v1/messages`) when non-empty.
+/// Populated from `provider_type=anthropic` (api_key) and `claude` (oauth) accounts.
+pub const ANTHROPIC_POOL_KEY: &str = "anthropic";
+
 #[derive(Clone)]
 pub struct AppState {
     pub ready: Arc<AtomicBool>,
