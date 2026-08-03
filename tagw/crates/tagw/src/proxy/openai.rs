@@ -247,14 +247,23 @@ impl StreamMetrics {
 struct UsageOnComplete {
     metrics: Arc<Mutex<Option<StreamMetrics>>>,
     usage_tx: crate::usage::UsageTx,
+    live: crate::live::LiveLogHub,
 }
 
 impl Drop for UsageOnComplete {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.metrics.lock() {
             if let Some(m) = guard.take() {
+                let ev = m.into_event();
+                self.live.publish(crate::live::request_complete_event(
+                    ev.id.clone(),
+                    ev.member_key_id.clone(),
+                    ev.model.clone(),
+                    ev.status,
+                    ev.error.as_deref(),
+                ));
                 // Non-blocking: never await the writer; log if the channel is full/closed.
-                if let Err(e) = self.usage_tx.try_send(m.into_event()) {
+                if let Err(e) = self.usage_tx.try_send(ev) {
                     tracing::warn!(
                         error = %e,
                         "usage channel full or closed; dropping UsageEvent"
@@ -353,6 +362,7 @@ fn stream_upstream_response(
     let usage_guard = UsageOnComplete {
         metrics,
         usage_tx: state.usage_tx.clone(),
+        live: state.live.clone(),
     };
 
     // CRITICAL: use bytes_stream() — never response.bytes().await on the stream path.

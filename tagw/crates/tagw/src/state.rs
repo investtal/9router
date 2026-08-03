@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::auth::dashboard::DEFAULT_SESSION_SECRET;
 use crate::cache::ConfigCache;
 use crate::db::Db;
+use crate::live::LiveLogHub;
 use crate::oauth::new_pending_map;
 use crate::oauth::refresh::PendingMap;
 use crate::router::AccountRouter;
@@ -37,6 +38,10 @@ pub struct AppState {
     pub oauth_pending: PendingMap,
     /// HMAC secret for signed `tagw_session` cookies (`TAGW_SESSION_SECRET`).
     pub session_secret: String,
+    /// Live console hub (SSE broadcast + recent ring).
+    pub live: LiveLogHub,
+    /// Path to `gateway.db` when known (admin DB export). Tests may leave this `None`.
+    pub db_path: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -54,7 +59,15 @@ impl AppState {
             oauth_pending: new_pending_map(),
             // Callers should set via `with_session_secret` / Config; default is the dev secret.
             session_secret: DEFAULT_SESSION_SECRET.to_string(),
+            live: LiveLogHub::new(),
+            db_path: None,
         }
+    }
+
+    /// Record on-disk path for admin DB file export.
+    pub fn with_db_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.db_path = Some(path.into());
+        self
     }
 
     /// Override session secret (tests / explicit config).
