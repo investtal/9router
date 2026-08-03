@@ -287,7 +287,36 @@ export async function startOAuth(provider: string): Promise<OAuthStartResponse> 
   );
 }
 
-/** Browser navigation URL that 302s to the IdP (session cookie sent). */
+/**
+ * Start OAuth and open the IdP in a **new tab** (dashboard stays put).
+ * Returns start payload so the UI can show paste-code + state.
+ */
+export async function startOAuthInNewTab(provider: string): Promise<OAuthStartResponse> {
+  const start = await startOAuth(provider);
+  const w = window.open(start.authorize_url, '_blank', 'noopener,noreferrer');
+  if (!w) {
+    throw new Error(
+      'Popup blocked — allow popups for this site, or open the authorize URL manually from the response.',
+    );
+  }
+  return start;
+}
+
+/** Finish OAuth by pasting the authorization code from the IdP (xAI / Claude / etc.). */
+export async function completeOAuth(
+  provider: string,
+  input: { code: string; state?: string },
+): Promise<{ ok: boolean; provider: string; account_id: string; redirect_uri: string }> {
+  return apiFetch(`/api/oauth/${encodeURIComponent(provider)}/complete`, {
+    method: 'POST',
+    body: JSON.stringify({
+      code: input.code,
+      state: input.state || undefined,
+    }),
+  });
+}
+
+/** Browser navigation URL that 302s to the IdP (same tab — prefer startOAuthInNewTab). */
 export function oauthStartUrl(provider: string): string {
   return `/api/oauth/${encodeURIComponent(provider)}/start`;
 }

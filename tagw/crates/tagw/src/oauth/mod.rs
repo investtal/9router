@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use rusqlite::params;
@@ -56,6 +56,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/oauth/{provider}/start", get(oauth_start))
         .route("/api/oauth/{provider}/callback", get(oauth_callback))
+        // Manual code paste when IdP shows a code / loopback callback was missed.
+        .route("/api/oauth/{provider}/complete", post(oauth_complete))
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +79,14 @@ struct CallbackQuery {
     state: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompleteBody {
+    /// Authorization code from the IdP (required).
+    code: String,
+    /// OAuth `state` from start (optional — falls back to newest pending for provider).
+    state: Option<String>,
 }
 
 fn pending_map(state: &AppState) -> PendingMap {
@@ -302,6 +312,87 @@ async fn oauth_callback(
     );
     let base = dashboard_base_from_state(&state);
     Ok(Html(oauth_result_html("Connected", &body, &base)).into_response())
+}
+
+/// POST `/api/oauth/:provider/complete` — paste authorization code from IdP UI.
+///
+/// Use when the browser shows a raw code (or loopback on :1455/:56121 was missed)
+/// after OAuth in a **new tab**. Requires admin session + an in-memory start session.
+async fn oauth_complete(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(provider): Path<String>,
+    Json(body): Json<CompleteBody>,
+) -> Result<Json<Value>, AppError> {
+    let provider = provider.to_ascii_lowercase();
+    if !OAUTH_PROVIDER_IDS.contains(&provider.as_str()) {
+        return Err(AppError::NotFound(format!("unknown oauth provider '{provider}'")));
+    }
+    let code = body.code.trim();
+    if code.is_empty() {
+        return Err(AppError::BadRequest("code is required".into()));
+    }
+
+    let pending = take_pending_for_complete(&state, &provider, body.state.as_deref())?;
+    let http = state.http_client.clone();
+    let impl_ = provider_by_id(&provider, http)
+        .ok_or_else(|| AppError::NotFound(format!("unknown oauth provider '{provider}'")))?;
+
+    let tokens = impl_
+        .exchange_code(code, &pending.pkce)
+        .await
+        .map_err(|e| AppError::Upstream(format!("oauth exchange failed: {e}")))?;
+
+    let account_id = save_oauth_account(&state.db, &provider, &tokens, impl_.default_base_url())
+        .map_err(AppError::Internal)?;
+
+    if let Err(e) = state.cache.reload(&state.db) {
+        tracing::warn!(error = %e, "cache reload after oauth complete failed");
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "provider": provider,
+        "account_id": account_id,
+        "redirect_uri": pending.pkce.redirect_uri,
+    })))
+}
+
+fn take_pending_for_complete(
+    state: &AppState,
+    provider: &str,
+    state_param: Option<&str>,
+) -> Result<PendingOAuth, AppError> {
+    let map = pending_map(state);
+    let mut guard = map.lock().expect("oauth pending lock");
+    purge_stale_pending(&mut guard);
+
+    if let Some(s) = state_param.map(str::trim).filter(|s| !s.is_empty()) {
+        let pending = guard
+            .remove(s)
+            .ok_or_else(|| AppError::BadRequest("unknown or expired OAuth state".into()))?;
+        if pending.provider != provider {
+            return Err(AppError::BadRequest(format!(
+                "provider mismatch: start={} complete={provider}",
+                pending.provider
+            )));
+        }
+        return Ok(pending);
+    }
+
+    // Newest pending for this provider (user only pasted the code).
+    let key = guard
+        .iter()
+        .filter(|(_, p)| p.provider == provider)
+        .max_by_key(|(_, p)| p.created_at)
+        .map(|(k, _)| k.clone());
+    let Some(key) = key else {
+        return Err(AppError::BadRequest(
+            "no active OAuth start for this provider — click Connect first, then paste the code"
+                .into(),
+        ));
+    };
+    Ok(guard.remove(&key).expect("just found"))
 }
 
 fn html_escape_basic(s: &str) -> String {

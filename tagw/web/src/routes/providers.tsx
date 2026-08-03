@@ -2,15 +2,17 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   API_KEY_PROVIDER_TYPES,
+  completeOAuth,
   createAccount,
   createProvider,
   fetchMe,
   fetchProviders,
   OAUTH_PROVIDERS,
-  oauthStartUrl,
+  startOAuthInNewTab,
   patchAccount,
   patchProvider,
   type DashboardUser,
+  type OAuthStartResponse,
   type ProviderPublic,
 } from '../lib/api';
 
@@ -32,6 +34,12 @@ function ProvidersPage() {
   const [acctLabel, setAcctLabel] = useState('');
   const [acctKey, setAcctKey] = useState('');
   const [acctBase, setAcctBase] = useState('');
+
+  /** Last OAuth start (new tab) — for paste-code completion (xAI / Claude). */
+  const [oauthPending, setOauthPending] = useState<OAuthStartResponse | null>(null);
+  const [oauthCode, setOauthCode] = useState('');
+  const [oauthState, setOauthState] = useState('');
+  const [oauthHint, setOauthHint] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'admin';
 
@@ -120,6 +128,49 @@ function ProvidersPage() {
     }
   }
 
+  async function onConnectOAuth(provider: string) {
+    if (!isAdmin) return;
+    setBusy(true);
+    setError(null);
+    setOauthHint(null);
+    try {
+      const start = await startOAuthInNewTab(provider);
+      setOauthPending(start);
+      setOauthState(start.state);
+      setOauthCode('');
+      setOauthHint(
+        provider === 'xai' || provider === 'codex'
+          ? `Authorize in the new tab. If the app shows a code (or callback on :56121/:1455 did not finish), paste the code below. redirect_uri=${start.redirect_uri}`
+          : `Authorize in the new tab. When finished you should see Connected, or paste the authorization code below. state=${start.state}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onPasteOAuthCode(e: FormEvent) {
+    e.preventDefault();
+    if (!isAdmin || !oauthPending || !oauthCode.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await completeOAuth(oauthPending.provider, {
+        code: oauthCode.trim(),
+        state: oauthState.trim() || oauthPending.state,
+      });
+      setOauthHint(`Saved ${res.provider} account ${res.account_id}`);
+      setOauthCode('');
+      setOauthPending(null);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const apiKeyProviders = providers.filter((p) => p.kind === 'api_key');
 
   return (
@@ -133,15 +184,64 @@ function ProvidersPage() {
           <div className="card">
             <strong>OAuth connect</strong>
             <p className="muted" style={{ margin: '0.35rem 0 0.75rem' }}>
-              Start OAuth for a provider (admin session required). Opens the IdP authorize URL.
+              Opens the IdP in a <strong>new tab</strong> so this dashboard stays open. Admin only.
+              Codex uses loopback <code>localhost:1455</code>; xAI uses <code>127.0.0.1:56121</code>.
             </p>
             <div className="row">
               {OAUTH_PROVIDERS.map((id) => (
-                <a key={id} className="btn-link" href={oauthStartUrl(id)}>
+                <button
+                  key={id}
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => void onConnectOAuth(id)}
+                >
                   Connect {id}
-                </a>
+                </button>
               ))}
             </div>
+
+            {oauthHint ? (
+              <p className="muted" style={{ marginTop: '0.75rem' }}>
+                {oauthHint}
+              </p>
+            ) : null}
+
+            {oauthPending ? (
+              <form onSubmit={onPasteOAuthCode} style={{ marginTop: '1rem' }}>
+                <strong>Paste authorization code</strong>
+                <p className="muted" style={{ margin: '0.35rem 0 0.5rem' }}>
+                  Provider <code>{oauthPending.provider}</code>. If the new tab auto-completed
+                  (Connected page), skip this — just refresh the list below. Otherwise paste the{' '}
+                  <code>code</code> from the URL or IdP screen.
+                </p>
+                <div className="row">
+                  <label style={{ flex: 1 }}>
+                    Code{' '}
+                    <input
+                      value={oauthCode}
+                      onChange={(e) => setOauthCode(e.target.value)}
+                      placeholder="4/0A… or oauth code"
+                      autoComplete="off"
+                      required
+                    />
+                  </label>
+                  <label style={{ flex: 1 }}>
+                    State (optional){' '}
+                    <input
+                      value={oauthState}
+                      onChange={(e) => setOauthState(e.target.value)}
+                      placeholder={oauthPending.state}
+                      autoComplete="off"
+                      className="mono"
+                    />
+                  </label>
+                  <button type="submit" disabled={busy || !oauthCode.trim()}>
+                    Submit code
+                  </button>
+                </div>
+              </form>
+            ) : null}
           </div>
 
           <form className="card" onSubmit={onCreateProvider}>
