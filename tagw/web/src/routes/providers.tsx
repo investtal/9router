@@ -25,11 +25,9 @@ function ProvidersPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // Create provider form
   const [provType, setProvType] = useState<string>('openai_compat');
   const [provName, setProvName] = useState('');
 
-  // Add account form (selected provider)
   const [acctProviderId, setAcctProviderId] = useState('');
   const [acctLabel, setAcctLabel] = useState('');
   const [acctKey, setAcctKey] = useState('');

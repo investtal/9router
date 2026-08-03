@@ -281,7 +281,6 @@ export async function patchAccount(
   );
 }
 
-/** Fetch OAuth authorize URL (JSON; does not auto-redirect). */
 export async function startOAuth(provider: string): Promise<OAuthStartResponse> {
   return apiFetch<OAuthStartResponse>(
     `/api/oauth/${encodeURIComponent(provider)}/start?redirect=false`,

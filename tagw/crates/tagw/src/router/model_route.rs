@@ -23,7 +23,6 @@ pub fn resolve_openai_pool_key(model: Option<&str>, cache: &ConfigCache) -> Stri
     let m = model.to_ascii_lowercase();
 
     // (needles, preferred type pool key). First matching family with a non-empty
-    // type pool wins; empty type pool → openai_compat aggregate.
     let type_routes: &[(&[&str], &str)] = &[
         (&["glm", "zai"], "glm"),
         (&["deepseek"], "deepseek"),
