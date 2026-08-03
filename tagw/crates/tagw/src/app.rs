@@ -28,6 +28,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(admin::keys::router())
         .merge(admin::providers::router())
         .merge(admin::users::router())
+        .merge(admin::export::router())
         .merge(admin::usage_routes::router())
         .merge(live::router())
         .merge(quota::router())
