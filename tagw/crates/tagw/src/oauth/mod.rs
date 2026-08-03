@@ -115,6 +115,64 @@ fn purge_stale_pending(map: &mut HashMap<String, PendingOAuth>) {
     map.retain(|_, p| p.created_at > cutoff);
 }
 
+/// Shared OAuth result page (success or error) with links back to the dashboard.
+///
+/// `dashboard_base` should be the SPA origin (e.g. `http://127.0.0.1:20129`).
+/// Empty string uses relative paths (fine when callback is on the same host as the SPA).
+pub fn oauth_result_html(title: &str, body_html: &str, dashboard_base: &str) -> String {
+    let base = dashboard_base.trim_end_matches('/');
+    let providers = if base.is_empty() {
+        "/providers".to_string()
+    } else {
+        format!("{base}/providers")
+    };
+    let home = if base.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{base}/")
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{title} — tagw</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1.25rem; color: #111; line-height: 1.5; }}
+    h1 {{ font-size: 1.5rem; margin-bottom: 0.75rem; }}
+    code {{ background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }}
+    .actions {{ margin-top: 1.75rem; display: flex; flex-wrap: wrap; gap: 0.75rem; }}
+    a.btn {{ display: inline-block; padding: 0.55rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.95rem; }}
+    a.btn-primary {{ background: #111; color: #fff; }}
+    a.btn-primary:hover {{ background: #333; }}
+    a.btn-secondary {{ background: #e5e7eb; color: #111; }}
+    a.btn-secondary:hover {{ background: #d1d5db; }}
+    .muted {{ color: #6b7280; font-size: 0.9rem; margin-top: 1rem; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  {body_html}
+  <div class="actions">
+    <a class="btn btn-primary" href="{providers}">Back to Providers</a>
+    <a class="btn btn-secondary" href="{home}">Dashboard home</a>
+  </div>
+  <p class="muted">You can also close this tab if you opened OAuth in a popup.</p>
+</body>
+</html>"#
+    )
+}
+
+/// Prefer `TAGW_PUBLIC_BASE`, else empty (relative links on same host).
+pub fn dashboard_base_from_state(state: &AppState) -> String {
+    state
+        .public_base
+        .as_deref()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .unwrap_or_default()
+}
+
 async fn oauth_start(
     State(state): State<AppState>,
     _admin: AdminUser,
@@ -191,10 +249,13 @@ async fn oauth_callback(
     let provider = provider.to_ascii_lowercase();
     if let Some(err) = q.error {
         let desc = q.error_description.unwrap_or_default();
-        return Ok(Html(format!(
-            "<html><body><h1>OAuth error</h1><p>{err}</p><p>{desc}</p></body></html>"
-        ))
-        .into_response());
+        let body = format!(
+            "<p><strong>{}</strong></p><p>{}</p>",
+            html_escape_basic(&err),
+            html_escape_basic(&desc)
+        );
+        let base = dashboard_base_from_state(&state);
+        return Ok(Html(oauth_result_html("OAuth error", &body, &base)).into_response());
     }
     let code = q
         .code
@@ -236,11 +297,18 @@ async fn oauth_callback(
         tracing::warn!(error = %e, "cache reload after oauth callback failed");
     }
 
-    Ok(Html(format!(
-        "<html><body><h1>Connected</h1><p>Provider <b>{provider}</b> account <code>{account_id}</code> saved.</p>\
-         <p>You can close this window.</p></body></html>"
-    ))
-    .into_response())
+    let body = format!(
+        "<p>Provider <b>{provider}</b> account <code>{account_id}</code> saved.</p>"
+    );
+    let base = dashboard_base_from_state(&state);
+    Ok(Html(oauth_result_html("Connected", &body, &base)).into_response())
+}
+
+fn html_escape_basic(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Upsert oauth provider + insert account with tokens. Returns account id.

@@ -20,6 +20,7 @@ use tokio::net::TcpListener;
 use crate::error::AppError;
 use crate::state::AppState;
 
+use super::{dashboard_base_from_state, oauth_result_html};
 use super::refresh::provider_by_id;
 use super::save_oauth_account;
 
@@ -150,12 +151,14 @@ async fn handle_loopback_callback(
 ) -> Response {
     match complete_oauth_callback(&state, provider, q).await {
         Ok(html) => Html(html).into_response(),
-        Err(e) => Html(format!(
-            "<html><body><h1>OAuth failed</h1><p>{}</p>\
-             <p>You can close this window and retry Connect from the dashboard.</p></body></html>",
-            html_escape(&e.to_string())
-        ))
-        .into_response(),
+        Err(e) => {
+            let body = format!(
+                "<p>{}</p><p>Retry <b>Connect</b> from the dashboard if needed.</p>",
+                html_escape(&e.to_string())
+            );
+            let base = dashboard_base_from_state(&state);
+            Html(oauth_result_html("OAuth failed", &body, &base)).into_response()
+        }
     }
 }
 
@@ -207,13 +210,11 @@ async fn complete_oauth_callback(
         tracing::warn!(error = %e, "cache reload after loopback oauth failed");
     }
 
-    Ok(format!(
-        "<html><body style=\"font-family:system-ui;padding:2rem\">\
-         <h1>Connected</h1>\
-         <p>Provider <b>{provider}</b> account <code>{account_id}</code> saved.</p>\
-         <p>You can close this window and return to the dashboard.</p>\
-         </body></html>"
-    ))
+    let body = format!(
+        "<p>Provider <b>{provider}</b> account <code>{account_id}</code> saved.</p>"
+    );
+    let base = dashboard_base_from_state(state);
+    Ok(oauth_result_html("Connected", &body, &base))
 }
 
 fn html_escape(s: &str) -> String {
