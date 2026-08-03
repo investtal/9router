@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::auth::dashboard::DEFAULT_SESSION_SECRET;
 use crate::cache::ConfigCache;
 use crate::db::Db;
 use crate::oauth::new_pending_map;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub public_base: Option<String>,
     /// In-memory PKCE sessions for OAuth start → callback (keyed by state).
     pub oauth_pending: PendingMap,
+    /// HMAC secret for signed `tagw_session` cookies (`TAGW_SESSION_SECRET`).
+    pub session_secret: String,
 }
 
 impl AppState {
@@ -49,7 +52,25 @@ impl AppState {
             upstream_auth: None,
             public_base: None,
             oauth_pending: new_pending_map(),
+            // Callers should set via `with_session_secret` / Config; default is the dev secret.
+            session_secret: DEFAULT_SESSION_SECRET.to_string(),
         }
+    }
+
+    /// Override session secret (tests / explicit config).
+    pub fn with_session_secret(mut self, secret: impl Into<String>) -> Self {
+        self.session_secret = secret.into();
+        self
+    }
+
+    /// Mint a `Cookie` header value for the given dashboard username (integration tests).
+    pub fn test_session_cookie(&self, username: &str) -> String {
+        use crate::auth::dashboard::{load_user_by_username, mint_session_token, SESSION_COOKIE};
+        let user = load_user_by_username(&self.db, username)
+            .expect("load user")
+            .unwrap_or_else(|| panic!("user '{username}' not found"));
+        let token = mint_session_token(&user.id, &self.session_secret);
+        format!("{SESSION_COOKIE}={token}")
     }
 
     /// Attach dev fallback upstream config (from env or tests). Used when the
@@ -76,7 +97,8 @@ impl AppState {
         let (usage_tx, usage_rx) = tokio::sync::mpsc::channel(USAGE_CHANNEL_CAPACITY);
         // Keep the writer alive for the lifetime of the test process (detached).
         let _writer = spawn_usage_writer(db.clone(), usage_rx);
-        Self::new(db, cache, usage_tx)
+        // Stable secret so cookies are predictable; skip env warn noise in tests.
+        Self::new(db, cache, usage_tx).with_session_secret(DEFAULT_SESSION_SECRET)
     }
 
     pub fn is_ready(&self) -> bool {

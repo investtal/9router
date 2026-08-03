@@ -1,11 +1,13 @@
 //! Admin CRUD for API-key providers and their accounts.
 //!
-//! AUTHZ: Task 10 — routes are open for now.
+//! - `GET /api/admin/providers` and `GET /api/providers` — any authenticated (redacted secrets)
+//! - Mutating routes — admin only
 
 use axum::extract::{Path, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 
+use crate::auth::dashboard::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::providers::api_key::{
     create_account, create_provider, list_providers, set_account_enabled, set_provider_enabled,
@@ -16,22 +18,20 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // AUTHZ: Task 10 — allow all for now
+        // Viewer-readable list (redacted credentials).
+        .route("/api/providers", get(list_providers_handler))
         .route(
             "/api/admin/providers",
             get(list_providers_handler).post(create_provider_handler),
         )
-        // AUTHZ: Task 10 — allow all for now
         .route(
             "/api/admin/providers/{id}",
             patch(patch_provider_handler),
         )
-        // AUTHZ: Task 10 — allow all for now
         .route(
             "/api/admin/providers/{id}/accounts",
             post(create_account_handler),
         )
-        // AUTHZ: Task 10 — allow all for now
         .route(
             "/api/admin/providers/{id}/accounts/{account_id}",
             patch(patch_account_handler),
@@ -47,17 +47,17 @@ fn reload_cache(state: &AppState) {
 
 async fn list_providers_handler(
     State(state): State<AppState>,
+    _user: AuthUser,
 ) -> Result<Json<Vec<ProviderPublic>>, AppError> {
-    // AUTHZ: Task 10
     let rows = list_providers(&state.db).map_err(AppError::Internal)?;
     Ok(Json(rows))
 }
 
 async fn create_provider_handler(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Json(body): Json<CreateProviderRequest>,
 ) -> Result<Json<ProviderPublic>, AppError> {
-    // AUTHZ: Task 10
     let row = create_provider(&state.db, &body).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("unsupported provider_type")
@@ -75,10 +75,10 @@ async fn create_provider_handler(
 
 async fn patch_provider_handler(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Path(id): Path<String>,
     Json(body): Json<PatchEnabledRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // AUTHZ: Task 10
     let updated = set_provider_enabled(&state.db, &id, body.enabled).map_err(AppError::Internal)?;
     if !updated {
         return Err(AppError::NotFound(format!("provider {id}")));
@@ -92,10 +92,10 @@ async fn patch_provider_handler(
 
 async fn create_account_handler(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Path(id): Path<String>,
     Json(body): Json<CreateAccountRequest>,
 ) -> Result<Json<AccountPublic>, AppError> {
-    // AUTHZ: Task 10
     let row = create_account(&state.db, &id, &body).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
@@ -115,10 +115,10 @@ async fn create_account_handler(
 
 async fn patch_account_handler(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Path((id, account_id)): Path<(String, String)>,
     Json(body): Json<PatchEnabledRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // AUTHZ: Task 10
     let updated = set_account_enabled(&state.db, &id, &account_id, body.enabled)
         .map_err(AppError::Internal)?;
     if !updated {

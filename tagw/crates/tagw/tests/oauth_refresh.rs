@@ -155,12 +155,14 @@ async fn oauth_start_returns_authorize_url_json() {
         .await
         .with_public_base("http://127.0.0.1:20128");
     let app = build_app(state.clone());
+    let admin_cookie = state.test_session_cookie("admin");
 
     let res = app
         .oneshot(
             Request::builder()
                 .method("GET")
                 .uri("/api/oauth/codex/start?redirect=false")
+                .header("cookie", admin_cookie)
                 .body(Body::empty())
                 .unwrap(),
         )

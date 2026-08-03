@@ -25,6 +25,7 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::auth::dashboard::AdminUser;
 use crate::cache::{CachedAccount, ConfigCache};
 use crate::db::Db;
 use crate::error::AppError;
@@ -115,6 +116,7 @@ fn purge_stale_pending(map: &mut HashMap<String, PendingOAuth>) {
 
 async fn oauth_start(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Path(provider): Path<String>,
     Query(q): Query<StartQuery>,
     headers: axum::http::HeaderMap,

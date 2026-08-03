@@ -4,6 +4,7 @@ use axum::routing::{delete, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::dashboard::AdminUser;
 use crate::auth::member_key::{
     create_member_key, list_member_keys, revoke_member_key, MemberApiKeyPublic,
 };
@@ -28,17 +29,15 @@ pub struct CreateKeyResponse {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // AUTHZ: Task 10 — allow all for now
         .route("/api/admin/keys", post(create_key).get(list_keys))
-        // AUTHZ: Task 10 — allow all for now
         .route("/api/admin/keys/{id}", delete(delete_key))
 }
 
 async fn create_key(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Json(body): Json<CreateKeyRequest>,
 ) -> Result<Json<CreateKeyResponse>, AppError> {
-    // AUTHZ: Task 10
     let name = body.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("name must not be empty".into()));
@@ -60,8 +59,8 @@ async fn create_key(
 
 async fn list_keys(
     State(state): State<AppState>,
+    _admin: AdminUser,
 ) -> Result<Json<Vec<MemberApiKeyPublic>>, AppError> {
-    // AUTHZ: Task 10
     let rows = list_member_keys(&state.db).map_err(AppError::Internal)?;
     let public: Vec<MemberApiKeyPublic> = rows.into_iter().map(Into::into).collect();
     Ok(Json(public))
@@ -69,9 +68,9 @@ async fn list_keys(
 
 async fn delete_key(
     State(state): State<AppState>,
+    _admin: AdminUser,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    // AUTHZ: Task 10
     let revoked = revoke_member_key(&state.db, &id).map_err(AppError::Internal)?;
     if !revoked {
         return Err(AppError::NotFound(format!("member key {id}")));

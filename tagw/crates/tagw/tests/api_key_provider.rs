@@ -10,6 +10,10 @@ use tower::ServiceExt;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn admin_cookie(state: &AppState) -> String {
+    state.test_session_cookie("admin")
+}
+
 async fn read_json(res: axum::response::Response) -> Value {
     let body = axum::body::to_bytes(res.into_body(), 1024 * 1024)
         .await
@@ -50,6 +54,7 @@ async fn create_provider_account_loads_pool_and_proxy_hits_base_url() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri("/api/admin/providers")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -76,6 +81,7 @@ async fn create_provider_account_loads_pool_and_proxy_hits_base_url() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!("/api/admin/providers/{provider_id}/accounts"))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -130,6 +136,7 @@ async fn create_provider_account_loads_pool_and_proxy_hits_base_url() {
         .oneshot(
             Request::builder()
                 .method("GET")
+                .header("cookie", admin_cookie(&state))
                 .uri("/api/admin/providers")
                 .body(Body::empty())
                 .unwrap(),
@@ -199,6 +206,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri("/api/admin/providers")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -219,6 +227,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!("/api/admin/providers/{provider_id}/accounts"))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -242,6 +251,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!("/api/admin/providers/{provider_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(json!({ "enabled": false }).to_string()))
@@ -261,6 +271,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!("/api/admin/providers/{provider_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(json!({ "enabled": true }).to_string()))
@@ -278,6 +289,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
             .oneshot(
                 Request::builder()
                     .method("GET")
+                    .header("cookie", admin_cookie(&state))
                     .uri("/api/admin/providers")
                     .body(Body::empty())
                     .unwrap(),
@@ -299,6 +311,7 @@ async fn disable_provider_removes_account_from_enabled_pool() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!(
                     "/api/admin/providers/{provider_id}/accounts/{account_id}"
                 ))
@@ -318,11 +331,12 @@ async fn disable_provider_removes_account_from_enabled_pool() {
 #[tokio::test]
 async fn create_provider_rejects_unknown_type() {
     let state = AppState::new_for_test().await;
-    let app = build_app(state);
+    let app = build_app(state.clone());
     let res = app
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri("/api/admin/providers")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -345,6 +359,7 @@ async fn openai_compat_account_requires_base_url() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri("/api/admin/providers")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -364,6 +379,7 @@ async fn openai_compat_account_requires_base_url() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("cookie", admin_cookie(&state))
                 .uri(format!("/api/admin/providers/{provider_id}/accounts"))
                 .header("content-type", "application/json")
                 .body(Body::from(

@@ -1,3 +1,5 @@
+use crate::auth::dashboard::resolve_session_secret;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind: String,
@@ -9,6 +11,8 @@ pub struct Config {
     pub upstream_auth: Option<String>,
     /// Public base URL for OAuth `redirect_uri` construction (e.g. `http://127.0.0.1:20128`).
     pub public_base: Option<String>,
+    /// HMAC secret for dashboard session cookies (`TAGW_SESSION_SECRET`).
+    pub session_secret: String,
 }
 
 impl Config {
@@ -25,6 +29,7 @@ impl Config {
             public_base: std::env::var("TAGW_PUBLIC_BASE")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            session_secret: resolve_session_secret(),
         }
     }
 }

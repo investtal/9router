@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     cache.load(&db)?;
     let (usage_tx, usage_rx) = tokio::sync::mpsc::channel(USAGE_CHANNEL_CAPACITY);
     let _usage_writer = spawn_usage_writer(db.clone(), usage_rx);
-    let mut state = AppState::new(db, cache, usage_tx);
+    let mut state = AppState::new(db, cache, usage_tx).with_session_secret(cfg.session_secret.clone());
     if let Some(base) = cfg.upstream.clone() {
         state = state.with_upstream(base, cfg.upstream_auth.clone());
         tracing::info!(upstream = %state.upstream_base.as_deref().unwrap_or(""), "proxy upstream configured");
