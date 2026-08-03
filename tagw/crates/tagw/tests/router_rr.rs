@@ -337,7 +337,6 @@ async fn no_switch_after_first_byte_on_success_stream() {
         .mount(&mock)
         .await;
 
-    // Second account would 500 if wrongly contacted mid-stream.
     let mock_bad = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))

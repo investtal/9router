@@ -105,7 +105,6 @@ async fn quota_merges_provider_snapshot_and_derived_usage() {
     )
     .unwrap();
 
-    // Second account with empty quota_json → source=derived
     let acct2 = create_account(
         &state.db,
         &prov.id,

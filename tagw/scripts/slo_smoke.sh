@@ -9,7 +9,6 @@
 #
 # Usage (from repo root or tagw/):
 #   ./tagw/scripts/slo_smoke.sh
-#   CONCURRENCY=50 SLO_ADDED_P95_MS=250 ./tagw/scripts/slo_smoke.sh
 #
 # Exit 0 on pass, non-zero on failure.
 #
@@ -95,7 +94,6 @@ start_mock() {
     if [[ -s "${port_file}" ]]; then
       MOCK_ADDR="$(tr -d '[:space:]' < "${port_file}")"
       MOCK_BASE="http://${MOCK_ADDR}"
-      # Wait until health responds (accept is live).
       if curl -sf --max-time 1 "${MOCK_BASE}/healthz" >/dev/null 2>&1; then
         log "mock upstream at ${MOCK_BASE}"
         return 0
@@ -164,7 +162,6 @@ create_member_key() {
 }
 
 # Measure TTFB for N POSTs. concurrent=1 → sequential; concurrent=N → N parallel.
-# Writes one ms float per line to out_file.
 measure_ttfb_batch() {
   local base_url auth_header n out_file workers
   base_url="$1"

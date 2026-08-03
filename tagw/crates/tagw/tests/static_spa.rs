@@ -104,7 +104,6 @@ async fn build_app_without_static_does_not_serve_spa() {
 #[tokio::test]
 async fn resolve_web_dir_defaults() {
     // Unset TAGW_WEB_DIR in this process may race if other tests set it; only
-    // assert the constant and that resolve returns a path.
     assert_eq!(tagw::static_files::DEFAULT_WEB_DIR, "tagw/web/dist");
     let dir = tagw::static_files::resolve_web_dir();
     assert!(!dir.as_os_str().is_empty());

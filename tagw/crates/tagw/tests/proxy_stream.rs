@@ -23,7 +23,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// cannot interleave delays mid-body).
 async fn spawn_delayed_sse_upstream() -> String {
     async fn handler(headers: HeaderMap, _body: Bytes) -> impl IntoResponse {
-        // Assert upstream auth from gateway config (not the member key).
         let auth = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -81,7 +80,6 @@ async fn chat_completions_streams_chunks_without_buffering_all() {
             Some("Bearer upstream-secret-key".into()),
         );
 
-    // Create a member API key and load into cache (new_for_test already loaded empty).
     let (row, plaintext) = create_member_key(&state.db, "stream-tester").unwrap();
     state.cache.upsert(&row);
 

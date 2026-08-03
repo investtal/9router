@@ -72,7 +72,6 @@ async fn export_wipe_import_restores_providers_and_key_auth() {
     let app = build_app(state.clone());
     let cookie = state.test_session_cookie("admin");
 
-    // Export bundle via HTTP
     let res = app
         .clone()
         .oneshot(
@@ -116,7 +115,6 @@ async fn export_wipe_import_restores_providers_and_key_auth() {
         .unwrap();
     assert_eq!(n_prov, 0);
 
-    // Import via HTTP
     let res = app
         .clone()
         .oneshot(
@@ -186,7 +184,6 @@ async fn invalid_bundle_version_rejects_without_partial_write() {
     if let Some(a) = bad.accounts.first_mut() {
         a.provider_id = "missing-provider".into();
     } else {
-        // Ensure there is something to fail validation: invent dangling account
         bad.accounts.push(tagw::admin::export::AccountBundle {
             id: "a1".into(),
             provider_id: "missing-provider".into(),

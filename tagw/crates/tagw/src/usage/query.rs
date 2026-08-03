@@ -167,7 +167,6 @@ pub fn query_requests(db: &Db, filters: &RequestFilters) -> Result<RequestListRe
     let to = filters.to.clone().unwrap_or_else(|| now.to_rfc3339());
     let limit = filters.limit.max(1).min(MAX_LIMIT);
 
-    // Build dynamic WHERE with bound params; always include created_at bounds.
     let mut sql = String::from(
         "SELECT id, created_at, member_key_id, provider_id, account_id, model, tool, status,
                 prompt_tokens, completion_tokens, cached_tokens, cost_est,
@@ -200,7 +199,7 @@ pub fn query_requests(db: &Db, filters: &RequestFilters) -> Result<RequestListRe
     }
 
     sql.push_str(" ORDER BY created_at DESC");
-    binds.push(Box::new(i64::from(limit) + 1)); // fetch one extra for next_cursor
+    binds.push(Box::new(i64::from(limit) + 1));
     sql.push_str(&format!(" LIMIT ?{}", binds.len()));
 
     let mut items = db

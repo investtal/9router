@@ -58,7 +58,6 @@ impl OAuthProvider for KimiProvider {
         // Device-code flow: surface the authorize_device page with state for correlation.
         // Full device-code polling is out of scope for start/callback routes; this URL
         // is enough for admins to begin login. Callback can still accept a pasted code
-        // if the provider is extended later.
         let mut url = self.authorize_url.clone();
         let sep = if url.contains('?') { '&' } else { '?' };
         url.push(sep);

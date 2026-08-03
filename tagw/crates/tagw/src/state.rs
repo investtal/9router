@@ -115,7 +115,6 @@ impl AppState {
         let cache = ConfigCache::new();
         cache.load(&db).expect("load config cache");
         let (usage_tx, usage_rx) = tokio::sync::mpsc::channel(USAGE_CHANNEL_CAPACITY);
-        // Keep the writer alive for the lifetime of the test process (detached).
         let _writer = spawn_usage_writer(db.clone(), usage_rx);
         // Stable secret so cookies are predictable; skip env warn noise in tests.
         Self::new(db, cache, usage_tx).with_session_secret(DEFAULT_SESSION_SECRET)

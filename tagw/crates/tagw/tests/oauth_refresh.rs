@@ -102,7 +102,6 @@ async fn expired_token_refreshes_once_and_stores_in_sqlite() {
     assert!(found.is_some(), "oauth account in default pool");
     assert_eq!(found.unwrap().auth_header, "Bearer access-new");
 
-    // Second ensure without force should NOT hit mock again (expect(1) enforces).
     let token2 = ensure_access_token_with_client(
         &state.db,
         &state.cache,

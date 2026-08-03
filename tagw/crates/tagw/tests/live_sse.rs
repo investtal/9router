@@ -105,7 +105,6 @@ async fn sse_stream_delivers_published_json_event() {
     // Publish after client is connected so the event is not only in replay.
     state.live.publish(sample_event("live-1", "from-proxy"));
 
-    // Read stream bytes until we see our event (with timeout).
     let mut body = response.bytes_stream();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut buf = String::new();
@@ -118,7 +117,6 @@ async fn sse_stream_delivers_published_json_event() {
             Ok(Some(Ok(chunk))) => {
                 buf.push_str(&String::from_utf8_lossy(&chunk));
                 if buf.contains("live-1") && buf.contains("from-proxy") {
-                    // Ensure data line is JSON
                     assert!(buf.contains("data:"));
                     return;
                 }

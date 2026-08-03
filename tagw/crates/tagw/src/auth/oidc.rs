@@ -336,7 +336,6 @@ pub fn upsert_oidc_user(
         return Ok(existing);
     }
 
-    // Resolve a unique username.
     let mut username = preferred_username.trim().to_string();
     if username.is_empty() {
         username = username_from_claims(&json!({}), sub);

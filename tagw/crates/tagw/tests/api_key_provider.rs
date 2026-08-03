@@ -248,7 +248,6 @@ async fn disable_provider_removes_account_from_enabled_pool() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(state.cache.enabled_accounts(DEFAULT_POOL_KEY).len(), 1);
 
-    // Disable provider → pool empty for default.
     let res = app
         .clone()
         .oneshot(
@@ -285,7 +284,6 @@ async fn disable_provider_removes_account_from_enabled_pool() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(state.cache.enabled_accounts(DEFAULT_POOL_KEY).len(), 1);
 
-    // Disable account only.
     let account_id = {
         let list = app
             .clone()

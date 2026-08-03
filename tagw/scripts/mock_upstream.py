@@ -6,7 +6,6 @@ inter-chunk delay. First byte is sent immediately so TTFB measures hop cost.
 
 Usage:
   python3 mock_upstream.py [--port 0] [--chunk-delay-ms 5] [--port-file PATH]
-  # prints "LISTENING <host>:<port>" then serves until killed
 """
 
 from __future__ import annotations
@@ -66,7 +65,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
-        # Flush headers + first chunk immediately for TTFB measurement.
         self.wfile.write(chunks[0])
         self.wfile.flush()
         delay = max(0.0, float(self.chunk_delay_ms) / 1000.0)

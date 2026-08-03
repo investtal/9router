@@ -103,7 +103,6 @@ export type LiveEvent = {
   model: string | null;
 };
 
-/** Build query string for a usage range filter. */
 export function rangeQuery(range: Range): string {
   return `range=${encodeURIComponent(range)}`;
 }
