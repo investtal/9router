@@ -39,12 +39,16 @@ async fn create_key(
     Json(body): Json<CreateKeyRequest>,
 ) -> Result<Json<CreateKeyResponse>, AppError> {
     // AUTHZ: Task 10
-    let (row, plaintext) = create_member_key(&state.db, &body.name)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    state
-        .cache
-        .reload(&state.db)
-        .map_err(AppError::Internal)?;
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("name must not be empty".into()));
+    }
+    let (row, plaintext) = create_member_key(&state.db, name).map_err(AppError::Internal)?;
+    // Point update first so auth stays consistent if full reload fails.
+    state.cache.upsert(&row);
+    if let Err(e) = state.cache.reload(&state.db) {
+        tracing::warn!(error = %e, "config cache reload after create failed; upsert applied");
+    }
     Ok(Json(CreateKeyResponse {
         id: row.id,
         name: row.name,
@@ -72,9 +76,10 @@ async fn delete_key(
     if !revoked {
         return Err(AppError::NotFound(format!("member key {id}")));
     }
-    state
-        .cache
-        .reload(&state.db)
-        .map_err(AppError::Internal)?;
+    // Point remove first so revoked keys stop authenticating if full reload fails.
+    state.cache.remove_key(&id);
+    if let Err(e) = state.cache.reload(&state.db) {
+        tracing::warn!(error = %e, "config cache reload after revoke failed; remove_key applied");
+    }
     Ok(StatusCode::NO_CONTENT)
 }

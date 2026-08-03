@@ -41,6 +41,40 @@ impl ConfigCache {
         self.load(db)
     }
 
+    /// Insert or replace a single active key in-memory (create path).
+    /// Keeps auth consistent even if a subsequent full `reload` fails.
+    pub fn upsert(&self, row: &MemberApiKeyRow) {
+        let mut guard = self
+            .keys_by_prefix
+            .write()
+            .expect("config cache lock poisoned");
+        for candidates in guard.values_mut() {
+            candidates.retain(|k| k.id != row.id);
+        }
+        guard.retain(|_, v| !v.is_empty());
+        guard
+            .entry(row.key_prefix.clone())
+            .or_default()
+            .push(CachedKey {
+                id: row.id.clone(),
+                name: row.name.clone(),
+                key_hash: row.key_hash.clone(),
+            });
+    }
+
+    /// Remove a key by id from the in-memory cache (revoke path).
+    /// Keeps auth consistent even if a subsequent full `reload` fails.
+    pub fn remove_key(&self, id: &str) {
+        let mut guard = self
+            .keys_by_prefix
+            .write()
+            .expect("config cache lock poisoned");
+        for candidates in guard.values_mut() {
+            candidates.retain(|k| k.id != id);
+        }
+        guard.retain(|_, v| !v.is_empty());
+    }
+
     fn replace_keys(&self, rows: Vec<MemberApiKeyRow>) {
         let mut map: HashMap<String, Vec<CachedKey>> = HashMap::new();
         for row in rows {
