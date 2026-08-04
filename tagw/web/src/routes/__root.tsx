@@ -10,6 +10,7 @@ type NavItem = { to: string; label: string; adminOnly?: boolean; hideForViewer?:
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Overview' },
+  { to: '/models', label: 'Models' },
   { to: '/usage', label: 'Usage' },
   { to: '/members', label: 'Members' },
   { to: '/providers', label: 'Providers' },

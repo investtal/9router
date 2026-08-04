@@ -40,6 +40,8 @@ export type RequestLogRow = {
   id: string;
   created_at: string;
   member_key_id: string | null;
+  /** Display name of the member API key (e.g. "Harry", "pi-agent-tagw"). */
+  member_name?: string | null;
   provider_id: string | null;
   account_id: string | null;
   model: string | null;
@@ -53,6 +55,13 @@ export type RequestLogRow = {
   ttft_ms: number | null;
   usage_incomplete: boolean;
   error: string | null;
+  /** Client request body JSON (detail endpoint only; may be truncated). */
+  request_body?: string | null;
+  /** Upstream response / SSE (detail endpoint only; may be truncated). */
+  response_body?: string | null;
+  /** List/detail flag: body was captured for this request. */
+  has_request_body?: boolean;
+  has_response_body?: boolean;
 };
 
 export type RequestListResponse = {
@@ -116,6 +125,16 @@ export type LiveEvent = {
   request_id: string | null;
   member_key_id: string | null;
   model: string | null;
+};
+
+/** Client-facing model catalog entry (`id` is `provider/model`). */
+export type ModelEntry = {
+  id: string;
+  name: string;
+  provider: string;
+  upstream_model: string;
+  owned_by: string;
+  object: string;
 };
 
 export type CreateProviderInput = {
@@ -371,4 +390,9 @@ export async function revokeAdminKey(id: string): Promise<void> {
 
 export async function fetchRecentLogs(limit = 100): Promise<LiveEvent[]> {
   return apiFetch<LiveEvent[]>(`/api/logs/recent?limit=${limit}`);
+}
+
+/** Available models from enabled accounts — ids like `glm/glm-5.2`, `xai/grok-4.5`. */
+export async function fetchModels(): Promise<ModelEntry[]> {
+  return apiFetch<ModelEntry[]>('/api/models');
 }

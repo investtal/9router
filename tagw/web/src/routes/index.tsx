@@ -6,6 +6,7 @@ import {
   type Range,
   type UsageOverview,
 } from '../lib/api';
+import { formatCost, formatDateTime, formatNumber } from '../lib/format';
 
 export const Route = createFileRoute('/')({
   component: OverviewPage,
@@ -57,16 +58,20 @@ function OverviewPage() {
       {loading && !data ? <p className="muted">Loading…</p> : null}
       {data ? (
         <div className="grid">
-          <Stat label="Requests" value={data.request_count} />
-          <Stat label="Prompt tokens" value={data.prompt_tokens} />
-          <Stat label="Completion tokens" value={data.completion_tokens} />
-          <Stat label="Cached tokens" value={data.cached_tokens} />
-          <Stat label="Cost est." value={data.cost_est.toFixed(4)} />
+          <Stat label="Requests" value={formatNumber(data.request_count)} />
+          <Stat label="Input tokens" value={formatNumber(data.prompt_tokens)} />
+          <Stat label="Output tokens" value={formatNumber(data.completion_tokens)} />
+          <Stat
+            label="Total tokens"
+            value={formatNumber(data.prompt_tokens + data.completion_tokens)}
+          />
+          <Stat label="Cached tokens" value={formatNumber(data.cached_tokens)} />
+          <Stat label="Cost est." value={formatCost(data.cost_est)} />
         </div>
       ) : null}
       {data ? (
         <p className="muted" style={{ marginTop: '1rem' }}>
-          Window {data.from} → {data.to}
+          Window {formatDateTime(data.from)} → {formatDateTime(data.to)}
         </p>
       ) : null}
     </div>

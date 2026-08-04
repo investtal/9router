@@ -15,6 +15,7 @@ import {
   type OAuthStartResponse,
   type ProviderPublic,
 } from '../lib/api';
+import { ProviderLogo } from '../lib/providerLogo';
 
 export const Route = createFileRoute('/providers')({
   component: ProvidersPage,
@@ -195,7 +196,9 @@ function ProvidersPage() {
                   className="secondary"
                   disabled={busy}
                   onClick={() => void onConnectOAuth(id)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
                 >
+                  <ProviderLogo provider={id} size={18} />
                   Connect {id}
                 </button>
               ))}
@@ -336,10 +339,13 @@ function ProvidersPage() {
       {providers.map((p) => (
         <div className="card" key={p.id}>
           <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div>
-              <strong>{p.name}</strong>{' '}
-              <span className="badge">{p.provider_type}</span>{' '}
-              <span className="badge">{p.kind}</span>
+            <div className="provider-chip" style={{ gap: 10 }}>
+              <ProviderLogo provider={p.provider_type} size={28} title={p.provider_type} />
+              <div>
+                <strong>{p.name}</strong>{' '}
+                <span className="badge">{p.provider_type}</span>{' '}
+                <span className="badge">{p.kind}</span>
+              </div>
             </div>
             <div className="row" style={{ marginBottom: 0 }}>
               <span className={`badge ${p.enabled ? 'on' : 'off'}`}>
