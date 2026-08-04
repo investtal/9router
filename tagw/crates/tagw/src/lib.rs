@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod live;
+pub mod models_catalog;
 pub mod oauth;
 pub mod providers;
 pub mod proxy;

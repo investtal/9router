@@ -34,6 +34,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(admin::users::router())
         .merge(admin::export::router())
         .merge(admin::usage_routes::router())
+        .merge(admin::models_routes::router())
         .merge(live::router())
         .merge(quota::router())
         .merge(oauth::router())
@@ -44,6 +45,7 @@ pub fn build_app(state: AppState) -> Router {
             post(proxy::anthropic::proxy_anthropic),
         )
         // OpenAI-compatible passthrough: POST /v1/chat/completions and other /v1/*
+        // Note: GET /v1/models is on models_routes (merged above).
         .route("/v1/{*path}", any(proxy::openai::proxy_openai))
         .layer(cors_layer())
         .with_state(state)
