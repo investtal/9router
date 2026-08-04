@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS request_logs (
   latency_ms INTEGER,
   ttft_ms INTEGER,
   usage_incomplete INTEGER NOT NULL DEFAULT 0,
-  error TEXT
+  error TEXT,
+  -- Client request / upstream response payloads (truncated; 9router-style detail).
+  request_body TEXT,
+  response_body TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_rl_created ON request_logs(created_at);

@@ -7,11 +7,15 @@ use rusqlite::params;
 use super::Db;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i64 = 1;
+/// Bump when adding incremental migrations below.
+const SCHEMA_VERSION: i64 = 2;
 
 pub(super) fn run(db: &Db) -> Result<()> {
     db.with_conn(|conn| {
         conn.execute_batch(SCHEMA_SQL)?;
+
+        // Incremental migrations for existing DBs created under older schema versions.
+        apply_pending_migrations(conn)?;
 
         let applied: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
@@ -29,6 +33,28 @@ pub(super) fn run(db: &Db) -> Result<()> {
     .context("apply schema")?;
 
     seed_admin_if_empty(db).context("seed default admin")?;
+    Ok(())
+}
+
+fn apply_pending_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    // v2: body capture columns (idempotent via pragma table_info check).
+    let mut has_request_body = false;
+    let mut has_response_body = false;
+    let mut stmt = conn.prepare("PRAGMA table_info(request_logs)")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for row in rows {
+        match row?.as_str() {
+            "request_body" => has_request_body = true,
+            "response_body" => has_response_body = true,
+            _ => {}
+        }
+    }
+    if !has_request_body {
+        conn.execute("ALTER TABLE request_logs ADD COLUMN request_body TEXT", [])?;
+    }
+    if !has_response_body {
+        conn.execute("ALTER TABLE request_logs ADD COLUMN response_body TEXT", [])?;
+    }
     Ok(())
 }
 

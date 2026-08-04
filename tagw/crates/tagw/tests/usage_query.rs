@@ -36,6 +36,7 @@ fn seed_log(
         id: id.into(),
         created_at: created_at.into(),
         member_key_id: Some(member_key_id.into()),
+        member_name: None,
         provider_id: Some("prov-1".into()),
         account_id: Some("acct-1".into()),
         model: Some(model.into()),
@@ -49,6 +50,10 @@ fn seed_log(
         ttft_ms: Some(20),
         usage_incomplete: false,
         error: None,
+        request_body: None,
+        response_body: None,
+        has_request_body: false,
+        has_response_body: false,
     }
 }
 

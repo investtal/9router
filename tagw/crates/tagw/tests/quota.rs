@@ -65,6 +65,7 @@ async fn quota_merges_provider_snapshot_and_derived_usage() {
             id: "q1".into(),
             created_at: (now - Duration::days(1)).to_rfc3339(),
             member_key_id: Some("k1".into()),
+            member_name: None,
             provider_id: Some(prov.id.clone()),
             account_id: Some(acct.id.clone()),
             model: Some("gpt-4o".into()),
@@ -78,6 +79,10 @@ async fn quota_merges_provider_snapshot_and_derived_usage() {
             ttft_ms: Some(10),
             usage_incomplete: false,
             error: None,
+            request_body: None,
+            response_body: None,
+            has_request_body: false,
+            has_response_body: false,
         },
     )
     .unwrap();
@@ -88,6 +93,7 @@ async fn quota_merges_provider_snapshot_and_derived_usage() {
             id: "q-old".into(),
             created_at: (now - Duration::days(40)).to_rfc3339(),
             member_key_id: None,
+            member_name: None,
             provider_id: Some(prov.id.clone()),
             account_id: Some(acct.id.clone()),
             model: Some("gpt-4o".into()),
@@ -101,6 +107,10 @@ async fn quota_merges_provider_snapshot_and_derived_usage() {
             ttft_ms: None,
             usage_incomplete: false,
             error: None,
+            request_body: None,
+            response_body: None,
+            has_request_body: false,
+            has_response_body: false,
         },
     )
     .unwrap();

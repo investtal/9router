@@ -19,9 +19,14 @@ use crate::auth::member_key::MemberContext;
 use crate::error::AppError;
 use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
-use crate::router::{resolve_openai_pool_key, AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
+use crate::router::{
+    parse_model, resolve_openai_pool_key, rewrite_body_model, AccountRef, AccountRouter,
+    MAX_FAILOVER_ATTEMPTS,
+};
 use crate::state::AppState;
-use crate::usage::{estimate_cost, UsageEvent};
+use crate::usage::{
+    body_bytes_for_storage, body_store_max_bytes, estimate_cost, BodyCapture, UsageEvent,
+};
 
 /// Max side-channel line buffer for usage parse. Cap prevents unbounded hold of
 /// body-ish data when upstream never sends a newline (client stream is unaffected).
@@ -138,10 +143,18 @@ struct StreamMetrics {
     line_buf: String,
     provider_id: Option<String>,
     account_id: Option<String>,
+    request_body: Option<String>,
+    /// Side-channel response capture (capped; never blocks the client stream).
+    response_capture: BodyCapture,
 }
 
 impl StreamMetrics {
-    fn new(member_key_id: String, status: u16, start: Instant) -> Self {
+    fn new(
+        member_key_id: String,
+        status: u16,
+        start: Instant,
+        request_body: Option<String>,
+    ) -> Self {
         Self {
             start,
             first_byte_at: None,
@@ -156,6 +169,8 @@ impl StreamMetrics {
             line_buf: String::new(),
             provider_id: None,
             account_id: None,
+            request_body,
+            response_capture: BodyCapture::with_max(body_store_max_bytes()),
         }
     }
 
@@ -169,7 +184,9 @@ impl StreamMetrics {
         if self.first_byte_at.is_none() && !chunk.is_empty() {
             self.first_byte_at = Some(Instant::now());
         }
-        // Side-channel line scan only — never holds the body for the client.
+        // Response capture: raw bytes, O(1) after cap — does not affect client stream.
+        self.response_capture.push(chunk);
+        // Usage parse (token counters) still needs UTF-8 lines.
         if let Ok(s) = std::str::from_utf8(chunk) {
             self.line_buf.push_str(s);
             self.drain_complete_lines();
@@ -225,6 +242,7 @@ impl StreamMetrics {
             self.completion_tokens,
             self.cached_tokens,
         );
+        let response_body = self.response_capture.into_stored();
         UsageEvent {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -242,6 +260,8 @@ impl StreamMetrics {
             ttft_ms,
             usage_incomplete: self.usage_incomplete,
             error: self.error,
+            request_body: self.request_body,
+            response_body,
         }
     }
 }
@@ -350,13 +370,18 @@ fn stream_upstream_response(
     start: Instant,
     upstream_res: reqwest::Response,
     account: Option<&AccountRef>,
+    client_model: Option<String>,
+    request_body: Option<String>,
 ) -> Response {
     let status =
         StatusCode::from_u16(upstream_res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let status_u16 = status.as_u16();
     let res_headers = copy_response_headers(&upstream_res);
 
-    let mut metrics = StreamMetrics::new(member.key_id.clone(), status_u16, start);
+    let mut metrics = StreamMetrics::new(member.key_id.clone(), status_u16, start, request_body);
+    if let Some(m) = client_model {
+        metrics.model = Some(m);
+    }
     if let Some(a) = account {
         metrics = metrics.with_account(a);
     }
@@ -402,8 +427,19 @@ pub async fn proxy_openai(
         .map_err(|e| AppError::BadRequest(format!("request body: {e}")))?;
 
     let model_hint = parse_model_from_body(&body_bytes);
+    // Capture original client body (with provider/model) for request detail UI.
+    // Capture once (request already buffered for fail-over) — not on stream path.
+    let request_body_log = body_bytes_for_storage(&body_bytes, body_store_max_bytes());
+    // 9router-style: `glm/glm-5.2` → route to type:glm, send upstream model `glm-5.2`.
+    let parsed = model_hint.as_deref().map(parse_model);
     let pool_key = resolve_openai_pool_key(model_hint.as_deref(), &state.cache);
     let pool_accounts = state.cache.enabled_accounts(&pool_key);
+    let body_bytes = if let Some(ref p) = parsed {
+        rewrite_body_model(&body_bytes, &p.upstream_model).unwrap_or(body_bytes)
+    } else {
+        body_bytes
+    };
+    let client_model = parsed.as_ref().map(|p| p.client_model.clone());
 
     if !pool_accounts.is_empty() {
         return proxy_with_router(
@@ -416,6 +452,8 @@ pub async fn proxy_openai(
             body_bytes,
             &pool_key,
             &pool_accounts,
+            client_model,
+            request_body_log,
         )
         .await;
     }
@@ -440,6 +478,8 @@ pub async fn proxy_openai(
         start,
         upstream_res,
         None,
+        client_model,
+        request_body_log,
     ))
 }
 
@@ -506,6 +546,8 @@ async fn proxy_with_router(
     body_bytes: Bytes,
     pool_key: &str,
     accounts: &[AccountRef],
+    client_model: Option<String>,
+    request_body: Option<String>,
 ) -> Result<Response, AppError> {
     let mut last_error: Option<AppError> = None;
     let mut last_failover_response: Option<reqwest::Response> = None;
@@ -658,6 +700,8 @@ async fn proxy_with_router(
                     start,
                     upstream_res,
                     Some(&account),
+                    client_model.clone(),
+                    request_body.clone(),
                 ));
             }
             Err(e) => {
@@ -686,6 +730,8 @@ async fn proxy_with_router(
             start,
             res,
             last_account.as_ref(),
+            client_model,
+            request_body,
         ));
     }
 
@@ -739,7 +785,7 @@ mod tests {
 
     #[test]
     fn flush_line_buf_parses_non_newline_terminated_json() {
-        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now(), None);
         // Simulate a full non-stream JSON body delivered in one chunk with no trailing `\n`.
         let body = r#"{"id":"cmpl","model":"gpt-4o","usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}"#;
         m.on_bytes(&Bytes::from(body));
@@ -758,7 +804,7 @@ mod tests {
 
     #[test]
     fn into_event_flushes_residual_line_buf() {
-        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now(), None);
         m.on_bytes(&Bytes::from(
             r#"{"model":"gpt-4o","usage":{"prompt_tokens":5,"completion_tokens":1}}"#,
         ));
@@ -774,7 +820,7 @@ mod tests {
 
     #[test]
     fn line_buf_cap_clears_oversized_buffer_without_newline() {
-        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now(), None);
         // One huge chunk with no newline exceeds LINE_BUF_MAX.
         let huge = "x".repeat(LINE_BUF_MAX + 1);
         m.on_bytes(&Bytes::from(huge));
@@ -791,7 +837,7 @@ mod tests {
 
     #[test]
     fn newline_terminated_sse_usage_parses_without_explicit_flush() {
-        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("key-1".into(), 200, Instant::now(), None);
         m.on_bytes(&Bytes::from(
             "data: {\"id\":\"c\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n",
         ));

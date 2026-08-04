@@ -21,6 +21,8 @@ fn sample_event(i: usize) -> UsageEvent {
         ttft_ms: Some(50),
         usage_incomplete: false,
         error: None,
+        request_body: None,
+        response_body: None,
     }
 }
 

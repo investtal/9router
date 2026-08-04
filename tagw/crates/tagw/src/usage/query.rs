@@ -42,6 +42,8 @@ pub struct RequestLogRow {
     pub id: String,
     pub created_at: String,
     pub member_key_id: Option<String>,
+    /// Display name from `member_api_keys.name` (joined).
+    pub member_name: Option<String>,
     pub provider_id: Option<String>,
     pub account_id: Option<String>,
     pub model: Option<String>,
@@ -55,6 +57,18 @@ pub struct RequestLogRow {
     pub ttft_ms: Option<i64>,
     pub usage_incomplete: bool,
     pub error: Option<String>,
+    /// Client request body JSON (may be truncated). Omitted from list queries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<String>,
+    /// Upstream response body / SSE (may be truncated). Omitted from list queries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<String>,
+    /// Cheap flag for list UI (true if request_body is non-null/non-empty).
+    #[serde(default)]
+    pub has_request_body: bool,
+    /// Cheap flag for list UI (true if response_body is non-null/non-empty).
+    #[serde(default)]
+    pub has_response_body: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -167,38 +181,44 @@ pub fn query_requests(db: &Db, filters: &RequestFilters) -> Result<RequestListRe
     let to = filters.to.clone().unwrap_or_else(|| now.to_rfc3339());
     let limit = filters.limit.max(1).min(MAX_LIMIT);
 
+    // List: no full bodies (keep payload light). Flags only; bodies on detail by id.
     let mut sql = String::from(
-        "SELECT id, created_at, member_key_id, provider_id, account_id, model, tool, status,
-                prompt_tokens, completion_tokens, cached_tokens, cost_est,
-                latency_ms, ttft_ms, usage_incomplete, error
-         FROM request_logs
-         WHERE created_at >= ?1 AND created_at <= ?2",
+        "SELECT rl.id, rl.created_at, rl.member_key_id, mk.name,
+                rl.provider_id, rl.account_id, rl.model, rl.tool, rl.status,
+                rl.prompt_tokens, rl.completion_tokens, rl.cached_tokens, rl.cost_est,
+                rl.latency_ms, rl.ttft_ms, rl.usage_incomplete, rl.error,
+                NULL, NULL,
+                CASE WHEN rl.request_body IS NOT NULL AND length(rl.request_body) > 0 THEN 1 ELSE 0 END,
+                CASE WHEN rl.response_body IS NOT NULL AND length(rl.response_body) > 0 THEN 1 ELSE 0 END
+         FROM request_logs rl
+         LEFT JOIN member_api_keys mk ON mk.id = rl.member_key_id
+         WHERE rl.created_at >= ?1 AND rl.created_at <= ?2",
     );
     let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(from), Box::new(to)];
 
     if let Some(ref cursor) = filters.cursor {
         // Keyset: older than cursor (descending order).
         binds.push(Box::new(cursor.clone()));
-        sql.push_str(&format!(" AND created_at < ?{}", binds.len()));
+        sql.push_str(&format!(" AND rl.created_at < ?{}", binds.len()));
     }
     if let Some(ref mk) = filters.member_key_id {
         binds.push(Box::new(mk.clone()));
-        sql.push_str(&format!(" AND member_key_id = ?{}", binds.len()));
+        sql.push_str(&format!(" AND rl.member_key_id = ?{}", binds.len()));
     }
     if let Some(ref model) = filters.model {
         binds.push(Box::new(model.clone()));
-        sql.push_str(&format!(" AND model = ?{}", binds.len()));
+        sql.push_str(&format!(" AND rl.model = ?{}", binds.len()));
     }
     if let Some(ref tool) = filters.tool {
         binds.push(Box::new(tool.clone()));
-        sql.push_str(&format!(" AND tool = ?{}", binds.len()));
+        sql.push_str(&format!(" AND rl.tool = ?{}", binds.len()));
     }
     if let Some(status) = filters.status {
         binds.push(Box::new(status));
-        sql.push_str(&format!(" AND status = ?{}", binds.len()));
+        sql.push_str(&format!(" AND rl.status = ?{}", binds.len()));
     }
 
-    sql.push_str(" ORDER BY created_at DESC");
+    sql.push_str(" ORDER BY rl.created_at DESC");
     binds.push(Box::new(i64::from(limit) + 1));
     sql.push_str(&format!(" LIMIT ?{}", binds.len()));
 
@@ -228,14 +248,20 @@ pub fn query_requests(db: &Db, filters: &RequestFilters) -> Result<RequestListRe
     })
 }
 
-/// Single request log by id (detail drawer / modal).
+/// Single request log by id (detail drawer / modal) — includes request/response bodies.
 pub fn query_request_by_id(db: &Db, id: &str) -> Result<Option<RequestLogRow>, AppError> {
     db.with_conn(|conn| {
         conn.query_row(
-            "SELECT id, created_at, member_key_id, provider_id, account_id, model, tool, status,
-                    prompt_tokens, completion_tokens, cached_tokens, cost_est,
-                    latency_ms, ttft_ms, usage_incomplete, error
-             FROM request_logs WHERE id = ?1",
+            "SELECT rl.id, rl.created_at, rl.member_key_id, mk.name,
+                    rl.provider_id, rl.account_id, rl.model, rl.tool, rl.status,
+                    rl.prompt_tokens, rl.completion_tokens, rl.cached_tokens, rl.cost_est,
+                    rl.latency_ms, rl.ttft_ms, rl.usage_incomplete, rl.error,
+                    rl.request_body, rl.response_body,
+                    CASE WHEN rl.request_body IS NOT NULL AND length(rl.request_body) > 0 THEN 1 ELSE 0 END,
+                    CASE WHEN rl.response_body IS NOT NULL AND length(rl.response_body) > 0 THEN 1 ELSE 0 END
+             FROM request_logs rl
+             LEFT JOIN member_api_keys mk ON mk.id = rl.member_key_id
+             WHERE rl.id = ?1",
             params![id],
             map_request_row,
         )
@@ -403,23 +429,30 @@ pub fn query_member_detail(
 }
 
 fn map_request_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLogRow> {
+    let request_body: Option<String> = r.get(17)?;
+    let response_body: Option<String> = r.get(18)?;
     Ok(RequestLogRow {
         id: r.get(0)?,
         created_at: r.get(1)?,
         member_key_id: r.get(2)?,
-        provider_id: r.get(3)?,
-        account_id: r.get(4)?,
-        model: r.get(5)?,
-        tool: r.get(6)?,
-        status: r.get(7)?,
-        prompt_tokens: r.get(8)?,
-        completion_tokens: r.get(9)?,
-        cached_tokens: r.get(10)?,
-        cost_est: r.get(11)?,
-        latency_ms: r.get(12)?,
-        ttft_ms: r.get(13)?,
-        usage_incomplete: r.get::<_, i64>(14)? != 0,
-        error: r.get(15)?,
+        member_name: r.get(3)?,
+        provider_id: r.get(4)?,
+        account_id: r.get(5)?,
+        model: r.get(6)?,
+        tool: r.get(7)?,
+        status: r.get(8)?,
+        prompt_tokens: r.get(9)?,
+        completion_tokens: r.get(10)?,
+        cached_tokens: r.get(11)?,
+        cost_est: r.get(12)?,
+        latency_ms: r.get(13)?,
+        ttft_ms: r.get(14)?,
+        usage_incomplete: r.get::<_, i64>(15)? != 0,
+        error: r.get(16)?,
+        has_request_body: r.get::<_, i64>(19)? != 0,
+        has_response_body: r.get::<_, i64>(20)? != 0,
+        request_body,
+        response_body,
     })
 }
 
@@ -430,11 +463,13 @@ pub fn insert_request_log(db: &Db, row: &RequestLogRow) -> Result<(), AppError> 
             "INSERT INTO request_logs (
                 id, created_at, member_id, member_key_id, provider_id, account_id,
                 model, tool, status, prompt_tokens, completion_tokens, cached_tokens,
-                cost_est, latency_ms, ttft_ms, usage_incomplete, error
+                cost_est, latency_ms, ttft_ms, usage_incomplete, error,
+                request_body, response_body
             ) VALUES (
                 ?1, ?2, NULL, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14, ?15, ?16
+                ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18
             )",
             params![
                 row.id,
@@ -453,6 +488,8 @@ pub fn insert_request_log(db: &Db, row: &RequestLogRow) -> Result<(), AppError> 
                 row.ttft_ms,
                 i64::from(row.usage_incomplete),
                 row.error,
+                row.request_body,
+                row.response_body,
             ],
         )?;
         Ok(())

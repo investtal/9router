@@ -67,11 +67,13 @@ fn flush(db: &Db, batch: &mut Vec<UsageEvent>) {
                 "INSERT INTO request_logs (
                     id, created_at, member_id, member_key_id, provider_id, account_id,
                     model, tool, status, prompt_tokens, completion_tokens, cached_tokens,
-                    cost_est, latency_ms, ttft_ms, usage_incomplete, error
+                    cost_est, latency_ms, ttft_ms, usage_incomplete, error,
+                    request_body, response_body
                 ) VALUES (
                     ?1, ?2, NULL, ?3, ?4, ?5,
                     ?6, ?7, ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15, ?16
+                    ?12, ?13, ?14, ?15, ?16,
+                    ?17, ?18
                 )",
             )?;
             for ev in batch.iter() {
@@ -92,6 +94,8 @@ fn flush(db: &Db, batch: &mut Vec<UsageEvent>) {
                     ev.ttft_ms,
                     i64::from(ev.usage_incomplete),
                     ev.error,
+                    ev.request_body,
+                    ev.response_body,
                 ])?;
             }
         }

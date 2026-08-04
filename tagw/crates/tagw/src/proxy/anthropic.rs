@@ -22,7 +22,9 @@ use crate::oauth::ensure_access_token_with_client;
 use crate::proxy::stream::forward_io_stream;
 use crate::router::{AccountRef, AccountRouter, MAX_FAILOVER_ATTEMPTS};
 use crate::state::{AppState, ANTHROPIC_POOL_KEY};
-use crate::usage::{estimate_cost, UsageEvent};
+use crate::usage::{
+    body_bytes_for_storage, body_store_max_bytes, estimate_cost, BodyCapture, UsageEvent,
+};
 
 const LINE_BUF_MAX: usize = 256 * 1024;
 const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
@@ -167,10 +169,17 @@ struct StreamMetrics {
     line_buf: String,
     provider_id: Option<String>,
     account_id: Option<String>,
+    request_body: Option<String>,
+    response_capture: BodyCapture,
 }
 
 impl StreamMetrics {
-    fn new(member_key_id: String, status: u16, start: Instant) -> Self {
+    fn new(
+        member_key_id: String,
+        status: u16,
+        start: Instant,
+        request_body: Option<String>,
+    ) -> Self {
         Self {
             start,
             first_byte_at: None,
@@ -185,6 +194,8 @@ impl StreamMetrics {
             line_buf: String::new(),
             provider_id: None,
             account_id: None,
+            request_body,
+            response_capture: BodyCapture::with_max(body_store_max_bytes()),
         }
     }
 
@@ -198,6 +209,7 @@ impl StreamMetrics {
         if self.first_byte_at.is_none() && !chunk.is_empty() {
             self.first_byte_at = Some(Instant::now());
         }
+        self.response_capture.push(chunk);
         if let Ok(s) = std::str::from_utf8(chunk) {
             self.line_buf.push_str(s);
             self.drain_complete_lines();
@@ -249,6 +261,7 @@ impl StreamMetrics {
             self.completion_tokens,
             self.cached_tokens,
         );
+        let response_body = self.response_capture.into_stored();
         UsageEvent {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -266,6 +279,8 @@ impl StreamMetrics {
             ttft_ms,
             usage_incomplete: self.usage_incomplete,
             error: self.error,
+            request_body: self.request_body,
+            response_body,
         }
     }
 }
@@ -423,13 +438,14 @@ fn stream_upstream_response(
     start: Instant,
     upstream_res: reqwest::Response,
     account: Option<&AccountRef>,
+    request_body: Option<String>,
 ) -> Response {
     let status =
         StatusCode::from_u16(upstream_res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let status_u16 = status.as_u16();
     let res_headers = copy_response_headers(&upstream_res);
 
-    let mut metrics = StreamMetrics::new(member.key_id.clone(), status_u16, start);
+    let mut metrics = StreamMetrics::new(member.key_id.clone(), status_u16, start, request_body);
     if let Some(a) = account {
         metrics = metrics.with_account(a);
     }
@@ -526,6 +542,26 @@ pub async fn proxy_anthropic(
         .await
         .map_err(|e| AppError::BadRequest(format!("request body: {e}")))?;
 
+    let request_body_log = body_bytes_for_storage(&body_bytes, body_store_max_bytes());
+
+    // 9router-style: `anthropic/claude-…` or `glm/…` → strip prefix for upstream.
+    let body_bytes = {
+        let model_hint = serde_json::from_slice::<serde_json::Value>(&body_bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("model")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            });
+        if let Some(m) = model_hint {
+            let parsed = crate::router::parse_model(&m);
+            crate::router::rewrite_body_model(&body_bytes, &parsed.upstream_model)
+                .unwrap_or(body_bytes)
+        } else {
+            body_bytes
+        }
+    };
+
     let (pool_accounts, pool_key) = resolve_accounts(&state);
 
     if !pool_accounts.is_empty() {
@@ -539,6 +575,7 @@ pub async fn proxy_anthropic(
             body_bytes,
             &pool_accounts,
             &pool_key,
+            request_body_log,
         )
         .await;
     }
@@ -563,6 +600,7 @@ pub async fn proxy_anthropic(
         start,
         upstream_res,
         None,
+        request_body_log,
     ))
 }
 
@@ -603,6 +641,7 @@ async fn proxy_with_router(
     body_bytes: Bytes,
     accounts: &[AccountRef],
     pool_key: &str,
+    request_body: Option<String>,
 ) -> Result<Response, AppError> {
     let mut last_error: Option<AppError> = None;
     let mut last_failover_response: Option<reqwest::Response> = None;
@@ -734,6 +773,7 @@ async fn proxy_with_router(
                     start,
                     upstream_res,
                     Some(&account),
+                    request_body.clone(),
                 ));
             }
             Err(e) => {
@@ -759,6 +799,7 @@ async fn proxy_with_router(
             start,
             res,
             last_account.as_ref(),
+            request_body,
         ));
     }
 
@@ -805,7 +846,7 @@ mod tests {
 
     #[test]
     fn parse_message_start_nested_usage() {
-        let mut m = StreamMetrics::new("k".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("k".into(), 200, Instant::now(), None);
         parse_usage_from_line(
             r#"data: {"type":"message_start","message":{"model":"claude-3","usage":{"input_tokens":12,"output_tokens":0}}}"#,
             &mut m,
@@ -818,7 +859,7 @@ mod tests {
 
     #[test]
     fn parse_message_delta_output_tokens() {
-        let mut m = StreamMetrics::new("k".into(), 200, Instant::now());
+        let mut m = StreamMetrics::new("k".into(), 200, Instant::now(), None);
         m.prompt_tokens = 12;
         m.usage_incomplete = false;
         parse_usage_from_line(
