@@ -12,7 +12,7 @@
 .investtal/logs/
 # testing
 /coverage
-
+.investtal/
 # next.js
 /.next/
 /.next-cli-build/
