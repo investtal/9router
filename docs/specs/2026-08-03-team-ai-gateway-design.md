@@ -1,3 +1,5 @@
+> **Moved to** [`investtal/agi`](https://github.com/investtal/agi) (AI Gateway Investtal). This copy is retained for history; edit the agi repo.
+
 # Team AI Gateway — Design Spec
 
 **Status:** Draft (awaiting human approval / Plannotator)  
