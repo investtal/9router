@@ -1,3 +1,5 @@
+> **Moved to** [`investtal/agi`](https://github.com/investtal/agi) (AI Gateway Investtal). This copy is retained for history; edit the agi repo.
+
 # ADR: Proxy HTTP stack — axum/hyper vs Pingora
 
 - **Status:** Accepted
